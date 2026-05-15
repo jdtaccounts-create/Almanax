@@ -10,6 +10,12 @@ Données issues de DofusDB. Utilisation soumise à la LPNC-IA 1.0.
 
 Voir aussi [NOTICE.md](NOTICE.md) pour les crédits et notes de droits.
 
+## Avertissement droits
+
+Almanax est un outil communautaire non officiel. Il n'est pas affilié, approuvé, sponsorisé ou maintenu par Ankama, DofusDB ou leurs ayants droit.
+
+Les noms, visuels, icônes et données liés à DOFUS restent la propriété de leurs ayants droit respectifs. Les données DofusDB sont utilisées uniquement pour afficher les offrandes, items et crafts dans un cadre gratuit et non commercial.
+
 ## Fonctionnalités
 
 - Chargement des offrandes par jour, période ou mois courant.

@@ -30,7 +30,7 @@ Les contenus liés à DOFUS sont utilisés uniquement pour fournir un outil prat
 
 ## Images et données embarquées
 
-Certaines données peuvent être embarquées localement afin que l'application reste rapide et utilisable sans téléchargement complet à chaque lancement.
+Certaines données et images peuvent être embarquées localement afin que l'application reste rapide et utilisable sans téléchargement complet à chaque lancement.
 
 Si un ayant droit demande le retrait, la modification d'une attribution ou un changement dans la manière dont ces données sont utilisées, le projet pourra être modifié ou retiré.
 
