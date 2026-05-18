@@ -43,10 +43,18 @@ Cette stratégie évite les cas où la recherche exacte par année renvoie une o
 
 ## Installer l'application
 
-Les builds Windows sont générés par Tauri :
+Télécharge l'application depuis la dernière release :
 
-- `Almanax_0.1.0_x64-setup.exe` pour l'installation classique Windows
-- `Almanax_0.1.0_x64_en-US.msi` pour le format MSI
+[Télécharger Almanax v0.1.0](https://github.com/jdtaccounts-create/Almanax2/releases/tag/v0.1.0)
+
+Fichier recommandé :
+
+- `Almanax_0.1.0_x64-setup.exe` pour l'installation classique Windows.
+
+Autres fichiers disponibles :
+
+- `Almanax_0.1.0_x64_en-US.msi` pour le format MSI.
+- `almanax.exe` pour lancer l'application directement sans installeur.
 
 ## Développement
 
