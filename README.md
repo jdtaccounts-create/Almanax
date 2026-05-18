@@ -54,7 +54,6 @@ Fichier recommandé :
 Autres fichiers disponibles :
 
 - `Almanax_0.1.0_x64_en-US.msi` pour le format MSI.
-- `almanax.exe` pour lancer l'application directement sans installeur.
 
 ## Développement
 
