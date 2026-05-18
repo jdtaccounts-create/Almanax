@@ -45,7 +45,7 @@ Cette stratégie évite les cas où la recherche exacte par année renvoie une o
 
 Télécharge l'application depuis la dernière release :
 
-[Télécharger Almanax v0.1.0](https://github.com/jdtaccounts-create/Almanax2/releases/tag/v0.1.0)
+[Télécharger Almanax v0.1.0](https://github.com/jdtaccounts-create/Almanax/releases/tag/v0.1.0)
 
 Fichier recommandé :
 

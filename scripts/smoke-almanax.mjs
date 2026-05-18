@@ -52,7 +52,7 @@ try {
   if (!checkedStyle.checked || (!checkedStyle.backgroundColor.includes('13, 131, 245') && !checkedStyle.backgroundColor.includes('22, 136, 255'))) {
     throw new Error(`Checkbox non remplie en mode clair : ${JSON.stringify(checkedStyle)}`)
   }
-  await page.screenshot({ path: join(tmpdir(), 'almanax2-smoke.png'), fullPage: false })
+  await page.screenshot({ path: join(tmpdir(), 'almanax-smoke.png'), fullPage: false })
   if (errors.length) throw new Error(errors.join(' | '))
   console.log('Smoke OK')
 } finally {
