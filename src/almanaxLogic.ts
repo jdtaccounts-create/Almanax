@@ -465,23 +465,35 @@ export function buildCraftPlan(data: AlmanaxData, entries: ItemEntry[]): CraftPl
   const dependencies: Record<string, Record<string, number>> = {}
   const baseIds = new Set(entries.map((entry) => entry.item_id))
 
-  const mergeDeps = (target: Record<string, number>, source: Record<string, number>) => {
+  const mergeDeps = (target: Record<string, number>, source: Record<string, number>, skipItemId?: number) => {
     Object.entries(source).forEach(([itemId, quantity]) => {
+      if (skipItemId != null && Number(itemId) === skipItemId) return
       target[itemId] = (target[itemId] || 0) + Number(quantity)
     })
   }
 
-  function expand(itemId: number, quantity: number, stack = new Set<number>()): Record<string, number> {
+  function expand(itemId: number, quantity: number, depth = 0, stack = new Set<number>()): Record<string, number> {
     const item = data.items[String(itemId)]
     const recipe = data.recipes[String(itemId)]
-    if (!recipe || isRecipeExcluded(item) || stack.has(itemId)) {
-      mergeQuantity(recipe && isRecipeExcluded(item) ? excluded : obtainDirectly, itemId, quantity)
+    if (isRecipeExcluded(item)) {
+      mergeQuantity(excluded, itemId, quantity)
+      return { [String(itemId)]: quantity }
+    }
+
+    if (stack.has(itemId)) {
+      mergeQuantity(obtainDirectly, itemId, quantity)
+      return { [String(itemId)]: quantity }
+    }
+
+    if (!recipe) {
+      mergeQuantity(depth === 0 ? obtainDirectly : ingredients, itemId, quantity)
       return { [String(itemId)]: quantity }
     }
 
     const isBase = baseIds.has(itemId)
-    mergeQuantity(isBase ? directCrafts : subCrafts, itemId, quantity)
-    const lineKey = `${isBase ? 'direct_crafts' : 'sub_crafts'}:${itemId}`
+    const isDirectCraft = depth === 0 || isBase
+    mergeQuantity(isDirectCraft ? directCrafts : subCrafts, itemId, quantity)
+    const lineKey = `${isDirectCraft ? 'direct_crafts' : 'sub_crafts'}:${itemId}`
     dependencies[lineKey] ||= {}
 
     const nextStack = new Set(stack)
@@ -490,8 +502,7 @@ export function buildCraftPlan(data: AlmanaxData, entries: ItemEntry[]): CraftPl
     recipe.ingredient_ids.forEach((ingredientId, index) => {
       const needed = quantity * Number(recipe.quantities[index] || 1)
       dependencies[lineKey][String(ingredientId)] = (dependencies[lineKey][String(ingredientId)] || 0) + needed
-      mergeQuantity(ingredients, ingredientId, needed)
-      mergeDeps(dependencies[lineKey], expand(ingredientId, needed, nextStack))
+      mergeDeps(dependencies[lineKey], expand(ingredientId, needed, depth + 1, nextStack), ingredientId)
     })
 
     return { ...dependencies[lineKey] }
