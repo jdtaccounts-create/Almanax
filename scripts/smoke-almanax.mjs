@@ -19,7 +19,7 @@ try {
       const url = new URL(rawUrl)
       const path = url.pathname
       if (path === '/items' && url.searchParams.get('$limit') === '1') {
-        return new Response(JSON.stringify({ total: 21557, data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+        return new Response(JSON.stringify({ total: 21567, data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
       if (path === '/recipes' && url.searchParams.get('$limit') === '1') {
         return new Response(JSON.stringify({ total: 4852, data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })

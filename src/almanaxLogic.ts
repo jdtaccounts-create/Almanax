@@ -186,6 +186,10 @@ async function fetchPaginated(path: string, limit: number, label: string, progre
     return data.length
   })
 
+  if (rows.length !== total) {
+    throw new Error(`${label}: ${rows.length} lignes recues pour ${total} attendues`)
+  }
+
   return rows
 }
 
@@ -308,10 +312,7 @@ function makeEntry(data: AlmanaxData, date: string, cached: AlmanaxCacheEntry, o
   }
 }
 
-export async function loadAlmanaxData(): Promise<AlmanaxData> {
-  const stored = await loadStoredAlmanaxData().catch(() => null)
-  if (stored) return stored
-
+async function loadBundledAlmanaxData(previousAlmanax: AlmanaxData['almanax'] = {}): Promise<AlmanaxData> {
   const [items, recipes, almanax, metadata] = await Promise.all([
     fetch('/data/items.json').then((response) => response.json()).catch(() => ({})),
     fetch('/data/recipes.json').then((response) => response.json()).catch(() => ({})),
@@ -319,7 +320,35 @@ export async function loadAlmanaxData(): Promise<AlmanaxData> {
     fetch('/data/metadata.json').then((response) => response.json()).catch(() => ({})),
   ])
 
-  return { items, recipes, almanax, metadata }
+  return { items, recipes, almanax: { ...almanax, ...previousAlmanax }, metadata }
+}
+
+export async function loadAlmanaxData(): Promise<AlmanaxData> {
+  const stored = await loadStoredAlmanaxData().catch(() => null)
+  if (stored) {
+    try {
+      const bundledMetadata = await fetch('/data/metadata.json').then((response) => response.json())
+      const storedWithDefaults = {
+        ...stored,
+        almanax: stored.almanax || {},
+        metadata: stored.metadata || {},
+      }
+      const bundledIsNewer =
+        Number(bundledMetadata.item_total || 0) > Object.keys(storedWithDefaults.items || {}).length
+        || Number(bundledMetadata.recipe_total || 0) > Object.keys(storedWithDefaults.recipes || {}).length
+
+      if (!bundledIsNewer) return storedWithDefaults
+      return loadBundledAlmanaxData(storedWithDefaults.almanax)
+    } catch {
+      return {
+        ...stored,
+        almanax: stored.almanax || {},
+        metadata: stored.metadata || {},
+      }
+    }
+  }
+
+  return loadBundledAlmanaxData()
 }
 
 export function selectedApiDates(start: string, end: string): string[] {

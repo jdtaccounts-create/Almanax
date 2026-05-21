@@ -319,13 +319,17 @@ async function checkStatus(): Promise<void> {
     dataStatusLabel.value = 'Donnees DofusDB a jour'
     status.value = `Donnees locales a jour : ${info.localItemTotal} items, ${info.localRecipeTotal} recettes`
   } catch {
+    updateAvailable.value = false
     dataStatusLabel.value = 'Connexion indisponible'
     status.value = 'Connexion indisponible : donnees locales conservees'
   }
 }
 
 async function requestSyncData(): Promise<void> {
-  if (!data.value) return
+  if (!data.value) {
+    await syncData()
+    return
+  }
   working.value = true
   status.value = 'Verification DofusDB...'
   try {
@@ -341,7 +345,8 @@ async function requestSyncData(): Promise<void> {
     showSyncConfirm.value = true
   } catch {
     dataStatusLabel.value = 'Connexion indisponible'
-    status.value = 'Connexion indisponible : impossible de verifier DofusDB'
+    status.value = 'Verification impossible : confirme si tu veux forcer la synchronisation'
+    showSyncConfirm.value = true
   } finally {
     working.value = false
   }
@@ -357,6 +362,7 @@ async function syncData(): Promise<void> {
     dataStatusLabel.value = 'Donnees DofusDB a jour'
     loadCached()
     await refresh()
+    await checkStatus()
   } catch (error) {
     status.value = `Erreur synchro : ${String(error)}`
   } finally {
