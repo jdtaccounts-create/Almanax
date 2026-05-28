@@ -49,7 +49,7 @@ try {
     const style = window.getComputedStyle(element)
     return { checked: element.checked, backgroundColor: style.backgroundColor, borderColor: style.borderColor }
   })
-  if (!checkedStyle.checked || (!checkedStyle.backgroundColor.includes('13, 131, 245') && !checkedStyle.backgroundColor.includes('22, 136, 255'))) {
+  if (!checkedStyle.checked || !checkedStyle.backgroundColor.includes('31, 179, 91')) {
     throw new Error(`Checkbox non remplie en mode clair : ${JSON.stringify(checkedStyle)}`)
   }
   await page.screenshot({ path: join(tmpdir(), 'almanax-smoke.png'), fullPage: false })

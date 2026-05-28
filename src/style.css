@@ -15,7 +15,8 @@
   --subtle: #8e8c96;
   --blue: #1688ff;
   --blue-soft: rgba(22, 136, 255, 0.18);
-  --green: #34d56f;
+  --green: #1fb35b;
+  --green-soft: rgba(31, 179, 91, 0.22);
   --yellow: #d7d927;
   --period-sidebar-width: 288px;
   --radius: 18px;
@@ -45,6 +46,7 @@
   --blue: #0d83f5;
   --blue-soft: rgba(13, 131, 245, 0.14);
   --green: #1fb35b;
+  --green-soft: rgba(31, 179, 91, 0.18);
   --yellow: #a6aa17;
 }
 
@@ -602,9 +604,9 @@ p {
 
 .item-line input[type='checkbox']:checked,
 .item-line.done input[type='checkbox'] {
-  border-color: var(--blue) !important;
-  background: var(--blue) !important;
-  box-shadow: 0 0 0 3px var(--blue-soft);
+  border-color: var(--green) !important;
+  background: var(--green) !important;
+  box-shadow: 0 0 0 3px var(--green-soft);
 }
 
 .item-line input[type='checkbox']:checked::after,
