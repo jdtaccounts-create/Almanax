@@ -1,6 +1,6 @@
 [package]
 name = "almanax"
-version = "0.1.5"
+version = "0.1.6"
 description = "Almanax desktop app"
 authors = ["you"]
 license = ""

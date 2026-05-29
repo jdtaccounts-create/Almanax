@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, shallowRef } from 'vue'
 import {
   buildCraftPlan,
   CATEGORIES,
@@ -52,7 +52,7 @@ const status = ref('Chargement des donnees locales...')
 const dataStatusLabel = ref('Donnees locales')
 const updateAvailable = ref(false)
 const showSyncConfirm = ref(false)
-const appUpdate = ref<AppUpdate | null>(null)
+const appUpdate = shallowRef<AppUpdate | null>(null)
 const showAppUpdatePrompt = ref(false)
 const checkingAppUpdate = ref(false)
 const installingAppUpdate = ref(false)
