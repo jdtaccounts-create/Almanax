@@ -35,6 +35,18 @@ try {
   })
   await page.goto(url, { waitUntil: 'networkidle' })
   await page.waitForFunction(() => document.body.innerText.includes('Almanax'))
+  const defaultEndDate = await page.locator('.date-field input[type="date"]').nth(1).inputValue()
+  const expectedMonthEnd = await page.evaluate(() => {
+    const today = new Date()
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0)
+    const year = end.getFullYear()
+    const month = String(end.getMonth() + 1).padStart(2, '0')
+    const date = String(end.getDate()).padStart(2, '0')
+    return `${year}-${month}-${date}`
+  })
+  if (defaultEndDate !== expectedMonthEnd) {
+    throw new Error(`Fin de mois invalide : ${defaultEndDate}, attendu ${expectedMonthEnd}`)
+  }
   await page.waitForFunction(() => document.body.innerText.includes('Bouclier de Bowisse') || document.body.innerText.includes('offrandes'))
   await page.getByTitle(/Mode jour|Mode nuit/).click()
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')

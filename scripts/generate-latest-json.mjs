@@ -15,7 +15,7 @@ if (!fs.existsSync(sigPath)) {
 
 const latest = {
   version,
-  notes: 'Ajoute le systeme de mise a jour integre.',
+  notes: process.env.RELEASE_NOTES || 'Mise a jour Almanax.',
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {

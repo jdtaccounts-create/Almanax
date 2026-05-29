@@ -197,6 +197,13 @@ function apiDate(day: Date): string {
   return `${String(day.getMonth() + 1).padStart(2, '0')}/${String(day.getDate()).padStart(2, '0')}/${day.getFullYear()}`
 }
 
+function localIsoDate(day: Date): string {
+  const year = day.getFullYear()
+  const month = String(day.getMonth() + 1).padStart(2, '0')
+  const date = String(day.getDate()).padStart(2, '0')
+  return `${year}-${month}-${date}`
+}
+
 function displayDate(date: string): string {
   const [month, day, year] = date.split('/')
   return `${day}/${month}/${year}`
@@ -289,9 +296,8 @@ function dateRange(start: string, end: string): string[] {
 
 function currentMonthRange(): { start: string; end: string } {
   const today = new Date()
-  const start = today.toISOString().slice(0, 10)
   const endDate = new Date(today.getFullYear(), today.getMonth() + 1, 0)
-  return { start, end: endDate.toISOString().slice(0, 10) }
+  return { start: localIsoDate(today), end: localIsoDate(endDate) }
 }
 
 function makeEntry(data: AlmanaxData, date: string, cached: AlmanaxCacheEntry, order: number, fromCache: boolean): ItemEntry | null {
