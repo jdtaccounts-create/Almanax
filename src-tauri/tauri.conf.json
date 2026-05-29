@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Almanax",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "identifier": "fr.moufle.almanax",
   "build": {
     "frontendDist": "../dist",
@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -37,6 +38,17 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRGN0RGMjJBMkI0QUNCNzQKUldSMHkwb3JLdko5VDRZY1FhTGN2bUYxSHJUWllYMU8yQUR3bHZ0cWJWRGxiWXN4OW55dTNjRlkK",
+      "endpoints": [
+        "https://github.com/jdtaccounts-create/Almanax/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "quiet"
+      }
     }
   }
 }

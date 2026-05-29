@@ -29,6 +29,20 @@ type CalendarDay = {
   selected: boolean
   today: boolean
 }
+type AppUpdate = {
+  currentVersion: string
+  version: string
+  date?: string
+  body?: string
+  downloadAndInstall: (onEvent?: (event: DownloadEvent) => void) => Promise<void>
+}
+type DownloadEvent = {
+  event: 'Started' | 'Progress' | 'Finished'
+  data?: {
+    contentLength?: number
+    chunkLength?: number
+  }
+}
 
 const data = ref<AlmanaxData | null>(null)
 const entries = ref<ItemEntry[]>([])
@@ -38,6 +52,11 @@ const status = ref('Chargement des donnees locales...')
 const dataStatusLabel = ref('Donnees locales')
 const updateAvailable = ref(false)
 const showSyncConfirm = ref(false)
+const appUpdate = ref<AppUpdate | null>(null)
+const showAppUpdatePrompt = ref(false)
+const checkingAppUpdate = ref(false)
+const installingAppUpdate = ref(false)
+const updateProgress = ref('')
 const craftOpen = ref(false)
 const craftPlan = ref<CraftPlan | null>(null)
 const checkedEntries = ref<Set<string>>(new Set())
@@ -73,6 +92,12 @@ const craftSections = computed(() => {
 
 const craftLines = computed(() => craftSections.value.flatMap((section) => section.lines))
 const craftDoneCount = computed(() => craftLines.value.filter((line) => craftLineDone(line)).length)
+const appUpdateButtonVisible = computed(() => !!appUpdate.value || checkingAppUpdate.value || installingAppUpdate.value)
+const appUpdateButtonLabel = computed(() => {
+  if (installingAppUpdate.value) return 'Installation...'
+  if (checkingAppUpdate.value) return 'Recherche...'
+  return 'Mettre a jour'
+})
 
 const coveredByItemId = computed(() => {
   const covered = new Map<number, number>()
@@ -264,9 +289,13 @@ function imageUrl(path: string): string {
   return `/${path.replace(/\\/g, '/')}`
 }
 
+function isTauriRuntime(): boolean {
+  return '__TAURI_INTERNALS__' in window
+}
+
 async function openItem(itemId: number): Promise<void> {
   const url = `https://dofusdb.fr/database/object/${itemId}`
-  if ('__TAURI_INTERNALS__' in window) {
+  if (isTauriRuntime()) {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke('open_external_url', { url })
@@ -276,6 +305,70 @@ async function openItem(itemId: number): Promise<void> {
     }
   }
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+async function checkAppUpdate(showPrompt: boolean): Promise<void> {
+  if (!isTauriRuntime() || checkingAppUpdate.value || installingAppUpdate.value) return
+  checkingAppUpdate.value = true
+  updateProgress.value = ''
+  try {
+    const { check } = await import('@tauri-apps/plugin-updater')
+    const update = await check()
+    if (update) {
+      appUpdate.value = update
+      showAppUpdatePrompt.value = showPrompt
+      status.value = `Mise a jour ${update.version} disponible`
+      return
+    }
+    appUpdate.value = null
+    showAppUpdatePrompt.value = false
+    if (!showPrompt) status.value = 'Application deja a jour'
+  } catch (error) {
+    if (!showPrompt) status.value = `Verification maj impossible : ${String(error)}`
+  } finally {
+    checkingAppUpdate.value = false
+  }
+}
+
+function declineAppUpdate(): void {
+  showAppUpdatePrompt.value = false
+  updateProgress.value = 'Mise a jour disponible quand tu veux'
+}
+
+async function installAppUpdate(): Promise<void> {
+  if (installingAppUpdate.value) return
+  if (!appUpdate.value) {
+    await checkAppUpdate(false)
+    if (!appUpdate.value) return
+  }
+  installingAppUpdate.value = true
+  showAppUpdatePrompt.value = true
+  updateProgress.value = 'Telechargement de la mise a jour...'
+  let downloaded = 0
+  let total: number | undefined
+  try {
+    await appUpdate.value.downloadAndInstall((event) => {
+      if (event.event === 'Started') {
+        downloaded = 0
+        total = event.data?.contentLength
+        updateProgress.value = total ? `Telechargement : 0/${Math.round(total / 1024 / 1024)} Mo` : 'Telechargement...'
+      } else if (event.event === 'Progress') {
+        downloaded += event.data?.chunkLength || 0
+        updateProgress.value = total
+          ? `Telechargement : ${Math.min(100, Math.round((downloaded / total) * 100))}%`
+          : `Telechargement : ${Math.round(downloaded / 1024 / 1024)} Mo`
+      } else {
+        updateProgress.value = 'Installation terminee, redemarrage...'
+      }
+    })
+    const { relaunch } = await import('@tauri-apps/plugin-process')
+    await relaunch()
+  } catch (error) {
+    updateProgress.value = `Mise a jour impossible : ${String(error)}`
+    status.value = updateProgress.value
+  } finally {
+    installingAppUpdate.value = false
+  }
 }
 
 function loadCached(): void {
@@ -467,6 +560,7 @@ onMounted(async () => {
     status.value = entries.value.length ? `${entries.value.length} offrandes en cache` : 'Aucune offrande en cache'
     await refresh()
     await checkStatus()
+    await checkAppUpdate(true)
   } catch (error) {
     loading.value = false
     dataStatusLabel.value = 'Erreur de chargement'
@@ -494,6 +588,16 @@ onMounted(async () => {
         <button class="q-action craft-button" type="button" :disabled="working" @click="toggleCraftPlan">
           <span class="material-icons">handyman</span>
           <span>Plan craft</span>
+        </button>
+        <button
+          v-if="appUpdateButtonVisible"
+          class="q-action update-button"
+          type="button"
+          :disabled="installingAppUpdate || checkingAppUpdate"
+          @click="installAppUpdate"
+        >
+          <span class="material-icons">system_update_alt</span>
+          <span>{{ appUpdateButtonLabel }}</span>
         </button>
         <button class="icon-action" type="button" :title="themeMode === 'dark' ? 'Mode jour' : 'Mode nuit'" @click="toggleTheme">
           <span class="material-icons">{{ themeMode === 'dark' ? 'light_mode' : 'dark_mode' }}</span>
@@ -620,6 +724,21 @@ onMounted(async () => {
         <div class="modal-actions">
           <button class="q-action subtle" type="button" @click="showSyncConfirm = false">Annuler</button>
           <button class="q-action" type="button" @click="syncData">Forcer la sync</button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="showAppUpdatePrompt && appUpdate" class="modal-backdrop" @click.self="declineAppUpdate">
+      <section class="sync-modal glass-surface" role="dialog" aria-modal="true" aria-labelledby="app-update-title">
+        <h2 id="app-update-title">Mettre a jour Almanax ?</h2>
+        <p>
+          La version {{ appUpdate.version }} est disponible. L'installation se fait en arriere-plan,
+          puis l'application redemarre toute seule.
+        </p>
+        <p v-if="updateProgress" class="update-progress">{{ updateProgress }}</p>
+        <div class="modal-actions">
+          <button class="q-action subtle" type="button" :disabled="installingAppUpdate" @click="declineAppUpdate">Plus tard</button>
+          <button class="q-action" type="button" :disabled="installingAppUpdate" @click="installAppUpdate">Installer</button>
         </div>
       </section>
     </div>

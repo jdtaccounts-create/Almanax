@@ -237,6 +237,13 @@ p {
   box-shadow: 0 0 16px rgba(255, 189, 69, 0.16);
 }
 
+.q-action.update-button,
+:root[data-theme='light'] .q-action.update-button {
+  border-color: rgba(22, 136, 255, 0.42);
+  background: linear-gradient(180deg, #3096ff, #0871dc);
+  color: #f7fbff;
+}
+
 .q-action.craft-button,
 :root[data-theme='light'] .q-action.craft-button,
 .modal-actions .q-action:not(.subtle) {
@@ -584,7 +591,7 @@ p {
   background: rgba(255, 255, 255, 0.06);
   display: grid;
   place-items: center;
-  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  transition: box-shadow 120ms ease;
 }
 
 :root[data-theme='light'] .item-line input[type='checkbox'] {
@@ -605,8 +612,14 @@ p {
 .item-line input[type='checkbox']:checked,
 .item-line.done input[type='checkbox'] {
   border-color: var(--green) !important;
-  background: var(--green) !important;
+  background-color: var(--green) !important;
   box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+:root[data-theme='light'] .item-line input[type='checkbox']:checked,
+:root[data-theme='light'] .item-line.done input[type='checkbox'] {
+  border-color: var(--green) !important;
+  background-color: var(--green) !important;
 }
 
 .item-line input[type='checkbox']:checked::after,
@@ -837,6 +850,11 @@ p {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.45;
+}
+
+.sync-modal .update-progress {
+  color: var(--text);
+  font-weight: 720;
 }
 
 .modal-actions {
