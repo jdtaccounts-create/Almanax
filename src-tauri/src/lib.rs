@@ -1,5 +1,10 @@
 #[tauri::command]
 async fn http_get(url: String) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("api.dofusdb.fr") {
+        return Err("URL API non autorisée".to_string());
+    }
+
     let response = reqwest::get(url)
         .await
         .map_err(|error| error.to_string())?

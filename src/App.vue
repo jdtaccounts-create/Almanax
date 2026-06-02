@@ -1,19 +1,21 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
 import {
   buildCraftPlan,
   CATEGORIES,
   checkAlmanaxDataStatus,
   defaultPeriod,
   displayDate,
+  latestAlmanaxScans,
   loadAlmanaxData,
   loadCachedEntries,
   refreshAlmanaxEntries,
-  refreshItemDetails,
-  saveStoredAlmanaxData,
+  selectAlmanaxChoice,
   selectedApiDates,
   syncAlmanaxData,
   type AlmanaxData,
+  type AlmanaxDayScan,
+  type AlmanaxChoiceOption,
   type CraftLine,
   type CraftPlan,
   type ItemEntry,
@@ -51,12 +53,13 @@ const working = ref(false)
 const status = ref('Chargement des donnees locales...')
 const dataStatusLabel = ref('Donnees locales')
 const updateAvailable = ref(false)
-const showSyncConfirm = ref(false)
 const appUpdate = shallowRef<AppUpdate | null>(null)
 const showAppUpdatePrompt = ref(false)
 const checkingAppUpdate = ref(false)
 const installingAppUpdate = ref(false)
 const updateProgress = ref('')
+const choiceOpen = ref(false)
+const dayScans = ref<AlmanaxDayScan[]>([])
 const craftOpen = ref(false)
 const craftPlan = ref<CraftPlan | null>(null)
 const checkedEntries = ref<Set<string>>(new Set())
@@ -66,9 +69,9 @@ const period = defaultPeriod()
 const startDate = ref(period.start)
 const endDate = ref(period.end)
 const calendarMonth = ref(startOfMonth(parseIsoDate(period.start)))
+let autoRefreshTimer: number | undefined
+let overflowUpdateFrame: number | undefined
 
-const itemCount = computed(() => Object.keys(data.value?.items || {}).length)
-const recipeCount = computed(() => Object.keys(data.value?.recipes || {}).length)
 const selectedDates = computed(() => selectedApiDates(startDate.value, endDate.value))
 
 const groupedEntries = computed(() => {
@@ -79,6 +82,15 @@ const groupedEntries = computed(() => {
 })
 
 const remainingEntries = computed(() => entries.value.filter((entry) => !entryDone(entry)))
+
+const conflictScans = computed(() => dayScans.value.filter((scan) => scan.options.length > 1))
+const choiceTotalCount = computed(() => conflictScans.value.length)
+const choiceResolvedCount = computed(() =>
+  conflictScans.value.filter((scan) => Boolean(selectedChoiceKey(scan))).length,
+)
+const unresolvedChoiceCount = computed(() =>
+  conflictScans.value.filter((scan) => !selectedChoiceKey(scan)).length,
+)
 
 const craftSections = computed(() => {
   const plan = craftPlan.value
@@ -92,11 +104,13 @@ const craftSections = computed(() => {
 
 const craftLines = computed(() => craftSections.value.flatMap((section) => section.lines))
 const craftDoneCount = computed(() => craftLines.value.filter((line) => craftLineDone(line)).length)
-const appUpdateButtonVisible = computed(() => !!appUpdate.value || checkingAppUpdate.value || installingAppUpdate.value)
-const appUpdateButtonLabel = computed(() => {
-  if (installingAppUpdate.value) return 'Installation...'
-  if (checkingAppUpdate.value) return 'Recherche...'
-  return 'Mettre a jour'
+
+const checkedEntryItemIds = computed(() => {
+  const itemIds = new Set<number>()
+  entries.value.forEach((entry) => {
+    if (checkedEntries.value.has(entryKey(entry))) itemIds.add(entry.item_id)
+  })
+  return itemIds
 })
 
 const coveredByItemId = computed(() => {
@@ -110,18 +124,6 @@ const coveredByItemId = computed(() => {
   })
   return covered
 })
-
-const headerSummary = computed(() => {
-  if (loading.value) return status.value
-  if (entries.value.length) return `${entries.value.length} offrandes chargees · ${dataStatusLabel.value}`
-  return `${itemCount.value} items locaux · ${recipeCount.value} recettes locales · ${dataStatusLabel.value}`
-})
-
-const statusDotClass = computed(() => ({
-  loading: loading.value || working.value,
-  warn: updateAvailable.value,
-  ok: !loading.value && !working.value && !updateAvailable.value,
-}))
 
 const calendarTitle = computed(() => {
   const month = new Intl.DateTimeFormat('fr-FR', { month: 'long' }).format(calendarMonth.value)
@@ -153,6 +155,10 @@ const calendarDays = computed<CalendarDay[]>(() => {
 function parseIsoDate(value: string): Date {
   const [year, month, day] = value.split('-').map(Number)
   return new Date(year, month - 1, day)
+}
+
+function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
 
 function isoDate(day: Date): string {
@@ -200,7 +206,7 @@ function craftLineDone(line: CraftLine): boolean {
   if (checkedCraftLines.value.has(lineKey(line))) return true
   if ((coveredByItemId.value.get(line.item_id) || 0) >= line.quantity) return true
   if (!lineCompletesEntry(line)) return false
-  return entries.value.some((entry) => entry.item_id === line.item_id && checkedEntries.value.has(entryKey(entry)))
+  return checkedEntryItemIds.value.has(line.item_id)
 }
 
 function compareEntries(a: ItemEntry, b: ItemEntry): number {
@@ -211,8 +217,7 @@ function compareEntries(a: ItemEntry, b: ItemEntry): number {
 }
 
 function compareLines(a: CraftLine, b: CraftLine): number {
-  return Number(craftLineDone(a)) - Number(craftLineDone(b))
-    || compareText(a.raw_type, b.raw_type)
+  return compareText(a.raw_type, b.raw_type)
     || compareText(a.name, b.name)
     || a.item_id - b.item_id
 }
@@ -245,6 +250,49 @@ function shortDisplayDate(value: string): string {
   return displayDate(value).slice(0, 5)
 }
 
+function entrySourceLabel(entry: ItemEntry): string {
+  if (!entry.conflict) return entry.raw_type
+  return `${entry.raw_type} · choix possible`
+}
+
+function scanDisplayDate(scan: AlmanaxDayScan): string {
+  return displayDate(scan.date)
+}
+
+function selectedChoiceKey(scan: AlmanaxDayScan): string | undefined {
+  return data.value?.choices?.[scan.date]
+}
+
+function isChoiceSelected(scan: AlmanaxDayScan, option: AlmanaxChoiceOption): boolean {
+  return selectedChoiceKey(scan) === option.option_key
+}
+
+function refreshScanRefs(): void {
+  if (!data.value) return
+  dayScans.value = latestAlmanaxScans(data.value, selectedDates.value)
+  scheduleScrollableListUpdate()
+}
+
+async function selectChoiceOption(scan: AlmanaxDayScan, option: AlmanaxChoiceOption): Promise<void> {
+  if (!data.value) return
+  await selectAlmanaxChoice(data.value, scan.date, option.option_key)
+  refreshScanRefs()
+  loadCached()
+  checkedEntries.value = new Set()
+  checkedCraftLines.value = new Set()
+  craftPlan.value = null
+  craftOpen.value = false
+  if (!unresolvedChoiceCount.value) choiceOpen.value = false
+  status.value = `${displayDate(scan.date)} : ${option.quantity} x ${option.name}`
+  scheduleScrollableListUpdate()
+}
+
+function toggleChoicePanel(): void {
+  if (!conflictScans.value.length) return
+  choiceOpen.value = !choiceOpen.value
+  if (choiceOpen.value) craftOpen.value = false
+}
+
 function setEntryChecked(entry: ItemEntry, checked: boolean): void {
   const next = new Set(checkedEntries.value)
   if (checked) next.add(entryKey(entry))
@@ -260,6 +308,7 @@ function setEntryChecked(entry: ItemEntry, checked: boolean): void {
       else nextCraft.delete(lineKey(line))
     })
   checkedCraftLines.value = nextCraft
+  scheduleScrollableListUpdate()
 }
 
 function setCraftChecked(line: CraftLine, checked: boolean): void {
@@ -270,12 +319,13 @@ function setCraftChecked(line: CraftLine, checked: boolean): void {
 
   if (!lineCompletesEntry(line)) return
   const linkedEntries = entries.value.filter((entry) => entry.item_id === line.item_id)
+  const nextEntries = new Set(checkedEntries.value)
   linkedEntries.forEach((entry) => {
-    const nextEntries = new Set(checkedEntries.value)
     if (checked) nextEntries.add(entryKey(entry))
     else nextEntries.delete(entryKey(entry))
-    checkedEntries.value = nextEntries
   })
+  checkedEntries.value = nextEntries
+  scheduleScrollableListUpdate()
 }
 
 function progressLabel(line: CraftLine): string {
@@ -374,6 +424,21 @@ async function installAppUpdate(): Promise<void> {
 function loadCached(): void {
   if (!data.value) return
   entries.value = loadCachedEntries(data.value, selectedDates.value)
+  refreshScanRefs()
+  scheduleScrollableListUpdate()
+}
+
+function scheduleRefresh(): void {
+  if (!data.value || loading.value) return
+  if (autoRefreshTimer) window.clearTimeout(autoRefreshTimer)
+  autoRefreshTimer = window.setTimeout(() => {
+    autoRefreshTimer = undefined
+    if (working.value) {
+      scheduleRefresh()
+      return
+    }
+    void refresh()
+  }, 180)
 }
 
 async function refresh(): Promise<void> {
@@ -386,11 +451,14 @@ async function refresh(): Promise<void> {
   status.value = 'Synchronisation Almanax...'
   try {
     entries.value = await refreshAlmanaxEntries(data.value, selectedDates.value, (message) => { status.value = message })
+    refreshScanRefs()
     checkedEntries.value = new Set()
     checkedCraftLines.value = new Set()
     craftPlan.value = null
     craftOpen.value = false
+    choiceOpen.value = conflictScans.value.length > 0
     status.value = `${entries.value.length} offrandes chargees`
+    scheduleScrollableListUpdate()
   } catch (error) {
     loadCached()
     status.value = entries.value.length ? `Mode cache local : ${String(error)}` : `Erreur : ${String(error)}`
@@ -399,7 +467,7 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function checkStatus(): Promise<void> {
+async function checkStatus(autoSync = false): Promise<void> {
   if (!data.value) return
   try {
     const info = await checkAlmanaxDataStatus(data.value)
@@ -407,6 +475,7 @@ async function checkStatus(): Promise<void> {
     if (info.needsSync) {
       dataStatusLabel.value = 'Mise a jour disponible'
       status.value = `Donnees incompletes : ${info.missingLabels.join(', ')}`
+      if (autoSync) await syncData()
       return
     }
     dataStatusLabel.value = 'Donnees DofusDB a jour'
@@ -418,35 +487,7 @@ async function checkStatus(): Promise<void> {
   }
 }
 
-async function requestSyncData(): Promise<void> {
-  if (!data.value) {
-    await syncData()
-    return
-  }
-  working.value = true
-  status.value = 'Verification DofusDB...'
-  try {
-    const info = await checkAlmanaxDataStatus(data.value)
-    updateAvailable.value = info.needsSync
-    if (info.needsSync) {
-      working.value = false
-      await syncData()
-      return
-    }
-    dataStatusLabel.value = 'Donnees DofusDB a jour'
-    status.value = 'Donnees deja a jour'
-    showSyncConfirm.value = true
-  } catch {
-    dataStatusLabel.value = 'Connexion indisponible'
-    status.value = 'Verification impossible : confirme si tu veux forcer la synchronisation'
-    showSyncConfirm.value = true
-  } finally {
-    working.value = false
-  }
-}
-
 async function syncData(): Promise<void> {
-  showSyncConfirm.value = false
   working.value = true
   status.value = 'Synchronisation des donnees...'
   try {
@@ -468,7 +509,6 @@ function setToday(): void {
   startDate.value = today
   endDate.value = today
   calendarMonth.value = startOfMonth(parseIsoDate(today))
-  status.value = 'Periode reglee sur aujourd hui'
 }
 
 function resetCurrentMonth(): void {
@@ -476,7 +516,6 @@ function resetCurrentMonth(): void {
   startDate.value = next.start
   endDate.value = next.end
   calendarMonth.value = startOfMonth(parseIsoDate(next.start))
-  status.value = 'Periode remise au mois en cours'
 }
 
 function shiftCalendarMonth(delta: number): void {
@@ -498,14 +537,6 @@ function selectCalendarDay(iso: string): void {
   if (clicked < end) endDate.value = iso
 }
 
-async function toggleCraftPlan(): Promise<void> {
-  if (craftOpen.value && craftPlan.value) {
-    craftOpen.value = false
-    return
-  }
-  await prepareCraftPlan()
-}
-
 async function prepareCraftPlan(): Promise<void> {
   if (!data.value) return
   const base = remainingEntries.value
@@ -515,26 +546,20 @@ async function prepareCraftPlan(): Promise<void> {
   }
   working.value = true
   try {
-    let plan = buildCraftPlan(data.value, base)
-    const lineIds = [
-      ...plan.direct_crafts,
-      ...plan.sub_crafts,
-      ...plan.ingredients,
-      ...plan.obtain_directly,
-      ...plan.excluded,
-    ].map((line) => line.item_id)
-    await refreshItemDetails(data.value, lineIds, (message) => { status.value = message })
-    await saveStoredAlmanaxData(data.value)
-    plan = buildCraftPlan(data.value, base)
+    const plan = buildCraftPlan(data.value, base)
     craftPlan.value = plan
     checkedCraftLines.value = new Set()
     craftOpen.value = true
+    choiceOpen.value = false
     status.value = `Plan craft pret : ${craftLines.value.length} lignes`
+    scheduleScrollableListUpdate()
   } catch {
     craftPlan.value = buildCraftPlan(data.value, base)
     checkedCraftLines.value = new Set()
     craftOpen.value = true
+    choiceOpen.value = false
     status.value = `Plan craft pret : ${craftLines.value.length} lignes`
+    scheduleScrollableListUpdate()
   } finally {
     working.value = false
   }
@@ -550,6 +575,40 @@ function toggleTheme(): void {
   applyTheme(themeMode.value === 'dark' ? 'light' : 'dark')
 }
 
+function updateScrollableListClasses(): void {
+  document.querySelectorAll<HTMLElement>('.item-list, .choice-conflict-list, .craft-list').forEach((list) => {
+    const hasScroll = list.scrollHeight > list.clientHeight + 1
+    list.classList.toggle('has-scroll', hasScroll)
+  })
+}
+
+function scheduleScrollableListUpdate(): void {
+  if (overflowUpdateFrame) window.cancelAnimationFrame(overflowUpdateFrame)
+  void nextTick(() => {
+    overflowUpdateFrame = window.requestAnimationFrame(() => {
+      overflowUpdateFrame = undefined
+      updateScrollableListClasses()
+    })
+  })
+}
+
+watch([startDate, endDate], ([nextStart]) => {
+  if (isIsoDate(nextStart)) calendarMonth.value = startOfMonth(parseIsoDate(nextStart))
+  scheduleRefresh()
+})
+
+watch(
+  [
+    () => entries.value.length,
+    () => conflictScans.value.length,
+    () => craftLines.value.length,
+    () => craftOpen.value,
+    () => choiceOpen.value,
+  ],
+  scheduleScrollableListUpdate,
+  { flush: 'post' },
+)
+
 onMounted(async () => {
   const savedTheme = localStorage.getItem('almanax-theme')
   applyTheme(savedTheme === 'light' ? 'light' : 'dark')
@@ -559,52 +618,20 @@ onMounted(async () => {
     loading.value = false
     status.value = entries.value.length ? `${entries.value.length} offrandes en cache` : 'Aucune offrande en cache'
     await refresh()
-    await checkStatus()
+    await checkStatus(true)
     await checkAppUpdate(true)
+    scheduleScrollableListUpdate()
   } catch (error) {
     loading.value = false
     dataStatusLabel.value = 'Erreur de chargement'
     status.value = `Erreur chargement : ${String(error)}`
+    scheduleScrollableListUpdate()
   }
 })
 </script>
 
 <template>
-  <main class="app-shell" :class="{ 'craft-active': craftOpen && craftPlan }">
-    <header class="app-header glass-surface">
-      <div class="brand-block">
-        <h1>Almanax</h1>
-        <p><span class="status-dot" :class="statusDotClass"></span>{{ headerSummary }}</p>
-      </div>
-      <div class="header-actions">
-        <button class="q-action" type="button" :disabled="working" @click="refresh">
-          <span class="material-icons">refresh</span>
-          <span>Rafraichir</span>
-        </button>
-        <button class="q-action" type="button" :class="{ pulse: updateAvailable }" :disabled="working" @click="requestSyncData">
-          <span class="material-icons">sync</span>
-          <span>{{ updateAvailable ? 'Sync DofusDB !' : 'Sync DofusDB' }}</span>
-        </button>
-        <button class="q-action craft-button" type="button" :disabled="working" @click="toggleCraftPlan">
-          <span class="material-icons">handyman</span>
-          <span>Plan craft</span>
-        </button>
-        <button
-          v-if="appUpdateButtonVisible"
-          class="q-action update-button"
-          type="button"
-          :disabled="installingAppUpdate || checkingAppUpdate"
-          @click="installAppUpdate"
-        >
-          <span class="material-icons">system_update_alt</span>
-          <span>{{ appUpdateButtonLabel }}</span>
-        </button>
-        <button class="icon-action" type="button" :title="themeMode === 'dark' ? 'Mode jour' : 'Mode nuit'" @click="toggleTheme">
-          <span class="material-icons">{{ themeMode === 'dark' ? 'light_mode' : 'dark_mode' }}</span>
-        </button>
-      </div>
-    </header>
-
+  <main class="app-shell" :class="{ 'craft-active': craftOpen && craftPlan, 'choice-active': choiceOpen }">
     <section class="workspace">
       <aside class="period-panel glass-surface">
         <div class="period-quick-actions">
@@ -651,6 +678,11 @@ onMounted(async () => {
           </div>
         </div>
 
+        <footer class="period-footer">
+          <button class="icon-action theme-dock" type="button" :title="themeMode === 'dark' ? 'Mode jour' : 'Mode nuit'" @click="toggleTheme">
+            <span class="material-icons">{{ themeMode === 'dark' ? 'light_mode' : 'dark_mode' }}</span>
+          </button>
+        </footer>
       </aside>
 
       <section class="board-area">
@@ -665,14 +697,14 @@ onMounted(async () => {
                 v-for="entry in groupedEntries[category]"
                 :key="entryKey(entry)"
                 class="item-line"
-                :class="{ done: entryDone(entry) }"
+                :class="{ done: entryDone(entry), conflict: entry.conflict }"
               >
                 <input type="checkbox" :checked="entryDone(entry)" @change="setEntryChecked(entry, ($event.target as HTMLInputElement).checked)" />
                 <button class="item-card" type="button" @click="openItem(entry.item_id)">
                   <img v-if="imageUrl(entry.image_path)" :src="imageUrl(entry.image_path)" alt="" />
                   <span class="item-copy">
                     <strong>{{ entry.quantity }} x {{ entry.name }}</strong>
-                    <small>{{ shortDisplayDate(entry.date) }} · {{ entry.raw_type }}</small>
+                    <small>{{ shortDisplayDate(entry.date) }} · {{ entrySourceLabel(entry) }}</small>
                   </span>
                 </button>
               </div>
@@ -681,6 +713,61 @@ onMounted(async () => {
           </article>
         </div>
 
+        <aside v-if="!(craftOpen && craftPlan)" class="choice-drawer" :class="{ open: choiceOpen && conflictScans.length }">
+          <button
+            v-if="!choiceOpen || !conflictScans.length"
+            class="choice-rail"
+            type="button"
+            :disabled="!conflictScans.length"
+            @click="toggleChoicePanel"
+          >
+            <span>CHOIX</span>
+            <strong>{{ unresolvedChoiceCount || choiceTotalCount }}</strong>
+          </button>
+
+          <template v-else>
+            <header class="craft-title">
+              <button class="panel-close" type="button" title="Fermer" @click="choiceOpen = false">
+                <span class="material-icons">close</span>
+              </button>
+              <h2>Offrandes a choisir</h2>
+              <span>{{ unresolvedChoiceCount || choiceResolvedCount }}/{{ choiceTotalCount }}</span>
+            </header>
+
+            <div class="choice-conflict-list">
+              <article v-for="scan in conflictScans" :key="scan.date" class="choice-card">
+                <header>
+                  <strong>{{ scanDisplayDate(scan) }}</strong>
+                  <small>{{ scan.options.length }} choix possibles</small>
+                </header>
+
+                <div class="alternative-options">
+                  <template v-for="(option, optionIndex) in scan.options" :key="option.option_key">
+                    <div v-if="optionIndex > 0" class="alternative-separator"><span>ou</span></div>
+                    <div class="alternative-option" :class="{ selected: isChoiceSelected(scan, option) }">
+                      <button
+                        class="alternative-select"
+                        type="button"
+                        :aria-pressed="isChoiceSelected(scan, option)"
+                        @click="selectChoiceOption(scan, option)"
+                      >
+                        <span aria-hidden="true"></span>
+                      </button>
+                      <button class="alternative-item" type="button" @click="openItem(option.item_id)">
+                        <img v-if="imageUrl(option.image_path)" :src="imageUrl(option.image_path)" alt="" />
+                        <span class="item-copy">
+                          <strong>{{ option.quantity }} x {{ option.name }}</strong>
+                          <small>{{ option.raw_type }}</small>
+                        </span>
+                      </button>
+                    </div>
+                  </template>
+                </div>
+              </article>
+            </div>
+          </template>
+        </aside>
+
         <aside class="craft-drawer" :class="{ open: craftOpen && craftPlan }">
           <button v-if="!craftOpen || !craftPlan" class="craft-rail" type="button" @click="prepareCraftPlan">
             <span>PLAN CRAFT</span>
@@ -688,6 +775,9 @@ onMounted(async () => {
 
           <template v-else>
             <header class="craft-title">
+              <button class="panel-close" type="button" title="Fermer" @click="craftOpen = false">
+                <span class="material-icons">close</span>
+              </button>
               <h2>Plan de craft</h2>
               <span>{{ craftDoneCount }}/{{ craftLines.length }}</span>
             </header>
@@ -716,17 +806,6 @@ onMounted(async () => {
         </aside>
       </section>
     </section>
-
-    <div v-if="showSyncConfirm" class="modal-backdrop" @click.self="showSyncConfirm = false">
-      <section class="sync-modal glass-surface" role="dialog" aria-modal="true" aria-labelledby="sync-title">
-        <h2 id="sync-title">Forcer la sync DofusDB ?</h2>
-        <p>DofusDB annonce deja les memes totaux que tes donnees locales. Tu peux quand meme relancer une synchronisation complete si tu veux repartir propre.</p>
-        <div class="modal-actions">
-          <button class="q-action subtle" type="button" @click="showSyncConfirm = false">Annuler</button>
-          <button class="q-action" type="button" @click="syncData">Forcer la sync</button>
-        </div>
-      </section>
-    </div>
 
     <div v-if="showAppUpdatePrompt && appUpdate" class="modal-backdrop" @click.self="declineAppUpdate">
       <section class="sync-modal glass-surface" role="dialog" aria-modal="true" aria-labelledby="app-update-title">

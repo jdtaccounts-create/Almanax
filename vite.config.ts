@@ -12,6 +12,13 @@ export default defineConfig({
     watch: {
       ignored: ['**/src-tauri/**'],
     },
+    proxy: {
+      '/dofusdb-api': {
+        target: 'https://api.dofusdb.fr',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/dofusdb-api/, ''),
+      },
+    },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: {
