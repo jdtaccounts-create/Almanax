@@ -6,16 +6,12 @@ import {
   checkAlmanaxDataStatus,
   defaultPeriod,
   displayDate,
-  latestAlmanaxScans,
   loadAlmanaxData,
   loadCachedEntries,
   refreshAlmanaxEntries,
-  selectAlmanaxChoice,
   selectedApiDates,
   syncAlmanaxData,
   type AlmanaxData,
-  type AlmanaxDayScan,
-  type AlmanaxChoiceOption,
   type CraftLine,
   type CraftPlan,
   type ItemEntry,
@@ -58,8 +54,6 @@ const showAppUpdatePrompt = ref(false)
 const checkingAppUpdate = ref(false)
 const installingAppUpdate = ref(false)
 const updateProgress = ref('')
-const choiceOpen = ref(false)
-const dayScans = ref<AlmanaxDayScan[]>([])
 const craftOpen = ref(false)
 const craftPlan = ref<CraftPlan | null>(null)
 const checkedEntries = ref<Set<string>>(new Set())
@@ -82,15 +76,6 @@ const groupedEntries = computed(() => {
 })
 
 const remainingEntries = computed(() => entries.value.filter((entry) => !entryDone(entry)))
-
-const conflictScans = computed(() => dayScans.value.filter((scan) => scan.options.length > 1))
-const choiceTotalCount = computed(() => conflictScans.value.length)
-const choiceResolvedCount = computed(() =>
-  conflictScans.value.filter((scan) => Boolean(selectedChoiceKey(scan))).length,
-)
-const unresolvedChoiceCount = computed(() =>
-  conflictScans.value.filter((scan) => !selectedChoiceKey(scan)).length,
-)
 
 const craftSections = computed(() => {
   const plan = craftPlan.value
@@ -211,13 +196,15 @@ function craftLineDone(line: CraftLine): boolean {
 
 function compareEntries(a: ItemEntry, b: ItemEntry): number {
   return Number(entryDone(a)) - Number(entryDone(b))
+    || a.order - b.order
     || compareText(a.raw_type, b.raw_type)
     || compareText(a.name, b.name)
-    || a.order - b.order
+    || a.item_id - b.item_id
 }
 
 function compareLines(a: CraftLine, b: CraftLine): number {
-  return compareText(a.raw_type, b.raw_type)
+  return Number(craftLineDone(a)) - Number(craftLineDone(b))
+    || compareText(a.raw_type, b.raw_type)
     || compareText(a.name, b.name)
     || a.item_id - b.item_id
 }
@@ -251,46 +238,18 @@ function shortDisplayDate(value: string): string {
 }
 
 function entrySourceLabel(entry: ItemEntry): string {
-  if (!entry.conflict) return entry.raw_type
-  return `${entry.raw_type} · choix possible`
+  return entry.raw_type
 }
 
-function scanDisplayDate(scan: AlmanaxDayScan): string {
-  return displayDate(scan.date)
+function todayEntryDate(): string {
+  const today = new Date()
+  const month = String(today.getMonth() + 1).padStart(2, '0')
+  const day = String(today.getDate()).padStart(2, '0')
+  return `${month}/${day}/${today.getFullYear()}`
 }
 
-function selectedChoiceKey(scan: AlmanaxDayScan): string | undefined {
-  return data.value?.choices?.[scan.date]
-}
-
-function isChoiceSelected(scan: AlmanaxDayScan, option: AlmanaxChoiceOption): boolean {
-  return selectedChoiceKey(scan) === option.option_key
-}
-
-function refreshScanRefs(): void {
-  if (!data.value) return
-  dayScans.value = latestAlmanaxScans(data.value, selectedDates.value)
-  scheduleScrollableListUpdate()
-}
-
-async function selectChoiceOption(scan: AlmanaxDayScan, option: AlmanaxChoiceOption): Promise<void> {
-  if (!data.value) return
-  await selectAlmanaxChoice(data.value, scan.date, option.option_key)
-  refreshScanRefs()
-  loadCached()
-  checkedEntries.value = new Set()
-  checkedCraftLines.value = new Set()
-  craftPlan.value = null
-  craftOpen.value = false
-  if (!unresolvedChoiceCount.value) choiceOpen.value = false
-  status.value = `${displayDate(scan.date)} : ${option.quantity} x ${option.name}`
-  scheduleScrollableListUpdate()
-}
-
-function toggleChoicePanel(): void {
-  if (!conflictScans.value.length) return
-  choiceOpen.value = !choiceOpen.value
-  if (choiceOpen.value) craftOpen.value = false
+function isTodayEntry(entry: ItemEntry): boolean {
+  return entry.date === todayEntryDate()
 }
 
 function setEntryChecked(entry: ItemEntry, checked: boolean): void {
@@ -424,7 +383,6 @@ async function installAppUpdate(): Promise<void> {
 function loadCached(): void {
   if (!data.value) return
   entries.value = loadCachedEntries(data.value, selectedDates.value)
-  refreshScanRefs()
   scheduleScrollableListUpdate()
 }
 
@@ -451,12 +409,10 @@ async function refresh(): Promise<void> {
   status.value = 'Synchronisation Almanax...'
   try {
     entries.value = await refreshAlmanaxEntries(data.value, selectedDates.value, (message) => { status.value = message })
-    refreshScanRefs()
     checkedEntries.value = new Set()
     checkedCraftLines.value = new Set()
     craftPlan.value = null
     craftOpen.value = false
-    choiceOpen.value = conflictScans.value.length > 0
     status.value = `${entries.value.length} offrandes chargees`
     scheduleScrollableListUpdate()
   } catch (error) {
@@ -550,14 +506,12 @@ async function prepareCraftPlan(): Promise<void> {
     craftPlan.value = plan
     checkedCraftLines.value = new Set()
     craftOpen.value = true
-    choiceOpen.value = false
     status.value = `Plan craft pret : ${craftLines.value.length} lignes`
     scheduleScrollableListUpdate()
   } catch {
     craftPlan.value = buildCraftPlan(data.value, base)
     checkedCraftLines.value = new Set()
     craftOpen.value = true
-    choiceOpen.value = false
     status.value = `Plan craft pret : ${craftLines.value.length} lignes`
     scheduleScrollableListUpdate()
   } finally {
@@ -576,7 +530,7 @@ function toggleTheme(): void {
 }
 
 function updateScrollableListClasses(): void {
-  document.querySelectorAll<HTMLElement>('.item-list, .choice-conflict-list, .craft-list').forEach((list) => {
+  document.querySelectorAll<HTMLElement>('.item-list, .craft-list').forEach((list) => {
     const hasScroll = list.scrollHeight > list.clientHeight + 1
     list.classList.toggle('has-scroll', hasScroll)
   })
@@ -600,10 +554,8 @@ watch([startDate, endDate], ([nextStart]) => {
 watch(
   [
     () => entries.value.length,
-    () => conflictScans.value.length,
     () => craftLines.value.length,
     () => craftOpen.value,
-    () => choiceOpen.value,
   ],
   scheduleScrollableListUpdate,
   { flush: 'post' },
@@ -631,7 +583,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="app-shell" :class="{ 'craft-active': craftOpen && craftPlan, 'choice-active': choiceOpen }">
+  <main class="app-shell" :class="{ 'craft-active': craftOpen && craftPlan }">
     <section class="workspace">
       <aside class="period-panel glass-surface">
         <div class="period-quick-actions">
@@ -697,7 +649,7 @@ onMounted(async () => {
                 v-for="entry in groupedEntries[category]"
                 :key="entryKey(entry)"
                 class="item-line"
-                :class="{ done: entryDone(entry), conflict: entry.conflict }"
+                :class="{ done: entryDone(entry), today: isTodayEntry(entry) }"
               >
                 <input type="checkbox" :checked="entryDone(entry)" @change="setEntryChecked(entry, ($event.target as HTMLInputElement).checked)" />
                 <button class="item-card" type="button" @click="openItem(entry.item_id)">
@@ -713,64 +665,9 @@ onMounted(async () => {
           </article>
         </div>
 
-        <aside v-if="!(craftOpen && craftPlan)" class="choice-drawer" :class="{ open: choiceOpen && conflictScans.length }">
-          <button
-            v-if="!choiceOpen || !conflictScans.length"
-            class="choice-rail"
-            type="button"
-            :disabled="!conflictScans.length"
-            @click="toggleChoicePanel"
-          >
-            <span>CHOIX</span>
-            <strong>{{ unresolvedChoiceCount || choiceTotalCount }}</strong>
-          </button>
-
-          <template v-else>
-            <header class="craft-title">
-              <button class="panel-close" type="button" title="Fermer" @click="choiceOpen = false">
-                <span class="material-icons">close</span>
-              </button>
-              <h2>Offrandes a choisir</h2>
-              <span>{{ unresolvedChoiceCount || choiceResolvedCount }}/{{ choiceTotalCount }}</span>
-            </header>
-
-            <div class="choice-conflict-list">
-              <article v-for="scan in conflictScans" :key="scan.date" class="choice-card">
-                <header>
-                  <strong>{{ scanDisplayDate(scan) }}</strong>
-                  <small>{{ scan.options.length }} choix possibles</small>
-                </header>
-
-                <div class="alternative-options">
-                  <template v-for="(option, optionIndex) in scan.options" :key="option.option_key">
-                    <div v-if="optionIndex > 0" class="alternative-separator"><span>ou</span></div>
-                    <div class="alternative-option" :class="{ selected: isChoiceSelected(scan, option) }">
-                      <button
-                        class="alternative-select"
-                        type="button"
-                        :aria-pressed="isChoiceSelected(scan, option)"
-                        @click="selectChoiceOption(scan, option)"
-                      >
-                        <span aria-hidden="true"></span>
-                      </button>
-                      <button class="alternative-item" type="button" @click="openItem(option.item_id)">
-                        <img v-if="imageUrl(option.image_path)" :src="imageUrl(option.image_path)" alt="" />
-                        <span class="item-copy">
-                          <strong>{{ option.quantity }} x {{ option.name }}</strong>
-                          <small>{{ option.raw_type }}</small>
-                        </span>
-                      </button>
-                    </div>
-                  </template>
-                </div>
-              </article>
-            </div>
-          </template>
-        </aside>
-
         <aside class="craft-drawer" :class="{ open: craftOpen && craftPlan }">
           <button v-if="!craftOpen || !craftPlan" class="craft-rail" type="button" @click="prepareCraftPlan">
-            <span>PLAN CRAFT</span>
+            <span>PLAN<br />CRAFT</span>
           </button>
 
           <template v-else>

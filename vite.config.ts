@@ -18,6 +18,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/dofusdb-api/, ''),
       },
+      '/dofusdude-api': {
+        target: 'https://api.dofusdu.de',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/dofusdude-api/, ''),
+      },
     },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],

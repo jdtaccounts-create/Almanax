@@ -15,10 +15,28 @@ try {
     const realFetch = window.fetch.bind(window)
     window.fetch = async (input, init) => {
       const rawUrl = typeof input === 'string' ? input : input.url
-      const isApiUrl = rawUrl.startsWith('https://api.dofusdb.fr') || rawUrl.startsWith('/dofusdb-api')
+      const isApiUrl = rawUrl.startsWith('https://api.dofusdb.fr')
+        || rawUrl.startsWith('/dofusdb-api')
+        || rawUrl.startsWith('https://api.dofusdu.de')
+        || rawUrl.startsWith('/dofusdude-api')
       if (!isApiUrl) return realFetch(input, init)
       const url = new URL(rawUrl, window.location.origin)
-      const path = url.pathname.replace(/^\/dofusdb-api/, '')
+      const path = url.pathname
+        .replace(/^\/dofusdb-api/, '')
+        .replace(/^\/dofusdude-api/, '')
+      if (path.startsWith('/dofus3/v1/fr/almanax/')) {
+        return new Response(JSON.stringify({
+          date: '2026-05-14',
+          tribute: {
+            quantity: 1,
+            item: {
+              ankama_id: 18665,
+              name: 'Bouclier de Bowisse',
+              subtype: 'equipment',
+            },
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
       if (path === '/items' && url.searchParams.get('$limit') === '1') {
         return new Response(JSON.stringify({ total: 21567, data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
@@ -27,9 +45,6 @@ try {
       }
       if (path === '/items') {
         return new Response(JSON.stringify({ total: 1, data: [{ id: 18665, name: { fr: 'Bouclier de Bowisse' }, type: { name: { fr: 'Bouclier' }, superType: { name: { fr: 'Bouclier' } } }, img: 'https://api.dofusdb.fr/img/items/82021.png' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
-      }
-      if (path === '/almanax') {
-        return new Response(JSON.stringify({ itemIds: [18665], quantities: [1], dates: ['14/05/*'], name: { fr: 'Objets de qualité' } }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
       return new Response(JSON.stringify({ total: 0, data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
     }

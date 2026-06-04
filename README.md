@@ -2,19 +2,21 @@
 
 Almanax est une application Windows non officielle pour préparer les offrandes Almanax de DOFUS sur une période donnée.
 
-Projet communautaire gratuit, non commercial, non affilié à Ankama ni à DofusDB.
+Projet communautaire gratuit, non commercial, non affilié à Ankama, DofusDB ou Dofusdude.
 
 DOFUS et Ankama sont des marques ou propriétés de leurs ayants droit respectifs.
 
-Données issues de DofusDB. Utilisation soumise à la LPNC-IA 1.0.
+Données d'items et recettes issues de DofusDB. Utilisation soumise à la LPNC-IA 1.0.
+
+Offrandes Almanax récupérées via l'API publique Dofusdude.
 
 Voir aussi [NOTICE.md](NOTICE.md) pour les crédits et notes de droits.
 
 ## Avertissement droits
 
-Almanax est un outil communautaire non officiel. Il n'est pas affilié, approuvé, sponsorisé ou maintenu par Ankama, DofusDB ou leurs ayants droit.
+Almanax est un outil communautaire non officiel. Il n'est pas affilié, approuvé, sponsorisé ou maintenu par Ankama, DofusDB, Dofusdude ou leurs ayants droit.
 
-Les noms, visuels, icônes et données liés à DOFUS restent la propriété de leurs ayants droit respectifs. Les données DofusDB sont utilisées uniquement pour afficher les offrandes, items et crafts dans un cadre gratuit et non commercial.
+Les noms, visuels, icônes et données liés à DOFUS restent la propriété de leurs ayants droit respectifs. Les données sont utilisées uniquement pour afficher les offrandes, items et crafts dans un cadre gratuit et non commercial.
 
 ## Fonctionnalités
 
@@ -30,30 +32,23 @@ Les noms, visuels, icônes et données liés à DOFUS restent la propriété de 
 
 ## Logique Almanax
 
-L'application privilégie la collection `almanax-calendars` de DofusDB pour résoudre les offrandes via les dates fixes `DD/MM/*`.
+L'application récupère les offrandes Almanax via l'API publique Dofusdude.
 
-Si aucune entrée de calendrier n'est trouvée, elle retombe sur les endpoints journaliers :
-
-```text
-/almanax?date=MM/DD/*
-/almanax?date=MM/DD/YYYY
-```
-
-Cette stratégie évite les cas où la recherche exacte par année renvoie une offrande décalée.
+DofusDB reste utilisé pour la base locale d'items, les recettes, les images, les catégories et l'ouverture des fiches d'items.
 
 ## Installer l'application
 
 Télécharge l'application depuis la dernière release :
 
-[Télécharger Almanax v0.1.0](https://github.com/jdtaccounts-create/Almanax/releases/tag/v0.1.0)
+[Télécharger la dernière version d'Almanax](https://github.com/jdtaccounts-create/Almanax/releases/latest)
 
 Fichier recommandé :
 
-- `Almanax_0.1.0_x64-setup.exe` pour l'installation classique Windows.
+- `Almanax_x.x.x_x64-setup.exe` pour l'installation classique Windows.
 
 Autres fichiers disponibles :
 
-- `Almanax_0.1.0_x64_en-US.msi` pour le format MSI.
+- `Almanax_x.x.x_x64_en-US.msi` pour le format MSI.
 
 ## Développement
 
@@ -71,6 +66,7 @@ npm run build
 npm run smoke
 npm run sync:data
 npm run tauri -- build
+npm run build:signed
 ```
 
 L'exécutable généré se trouve dans :
@@ -81,7 +77,9 @@ src-tauri/target/release/almanax.exe
 
 ## Données et droits
 
-Cette application utilise des données publiques issues de DofusDB pour les offrandes Almanax, items, recettes, catégories et images d'items.
+Cette application utilise l'API publique Dofusdude pour les offrandes Almanax.
+
+Elle utilise aussi des données publiques issues de DofusDB pour les items, recettes, catégories et images d'items.
 
 Le projet est publié à titre non commercial. Il ne doit pas être vendu, monétisé par publicité, abonnement ou intégré dans un service commercial.
 

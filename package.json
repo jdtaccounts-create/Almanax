@@ -1,11 +1,12 @@
 {
   "name": "almanax",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "build:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed.ps1",
     "preview": "vite preview",
     "smoke": "node scripts/smoke-almanax.mjs",
     "sync:data": "node scripts/sync-static-data.mjs",

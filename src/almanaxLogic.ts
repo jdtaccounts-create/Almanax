@@ -1,19 +1,15 @@
 import { loadStoredAlmanaxData, saveStoredAlmanaxData } from './almanaxStorage'
 
 const API_URL = 'https://api.dofusdb.fr'
+const DOFUSDUDE_API_URL = 'https://api.dofusdu.de'
 const DEV_API_PROXY = '/dofusdb-api'
+const DEV_DOFUSDUDE_PROXY = '/dofusdude-api'
 const PAGE_LIMIT = 50
 const RECIPE_PAGE_LIMIT = 50
 const PAGE_CONCURRENCY = 4
 
 export const CATEGORIES = ['Equipement', 'Consommable', 'Ressource'] as const
 export type Category = typeof CATEGORIES[number]
-export const ALMANAX_METHOD_LABELS: Record<AlmanaxMethodKey, string> = {
-  almanax_exact: 'Almanax exact',
-  almanax_wildcard: 'Almanax annuel',
-  calendar_wildcard: 'Calendrier annuel',
-  calendar_exact_override: 'Calendrier exact',
-}
 
 export interface CachedItem {
   id: number
@@ -39,48 +35,28 @@ export interface AlmanaxCacheEntry {
   checked_at?: string
 }
 
-export type AlmanaxMethodKey =
-  | 'almanax_exact'
-  | 'almanax_wildcard'
-  | 'calendar_wildcard'
-  | 'calendar_exact_override'
-
-export interface AlmanaxMethodResult {
-  method: AlmanaxMethodKey
-  query: string
-  item_id: number | null
-  quantity: number | null
-  event_id: number | null
-  event_name: string
-  dates: string[]
-  error?: string
-  raw?: unknown
-}
-
-export interface AlmanaxChoiceOption {
-  option_key: string
-  item_id: number
-  quantity: number
-  name: string
-  category: Category
-  raw_type: string
-  image_path: string
-  source_methods: AlmanaxMethodKey[]
-}
-
-export interface AlmanaxDayScan {
+interface DofusdudeAlmanax {
   date: string
-  scanned_at: string
-  methods: Record<AlmanaxMethodKey, AlmanaxMethodResult>
-  options: AlmanaxChoiceOption[]
+  tribute?: {
+    quantity?: number
+    item?: {
+      ankama_id?: number
+      name?: string
+      subtype?: string
+      image_urls?: {
+        icon?: string
+        sd?: string
+        hq?: string
+        hd?: string
+      }
+    }
+  }
 }
 
 export interface AlmanaxData {
   items: Record<string, CachedItem>
   recipes: Record<string, Recipe | null>
   almanax: Record<string, AlmanaxCacheEntry>
-  history?: Record<string, AlmanaxDayScan[]>
-  choices?: Record<string, string>
   metadata: Record<string, unknown>
 }
 
@@ -95,8 +71,6 @@ export interface ItemEntry {
   image_path: string
   order: number
   from_cache: boolean
-  conflict: boolean
-  source_methods: AlmanaxMethodKey[]
 }
 
 export interface CraftLine {
@@ -148,6 +122,25 @@ async function apiGet(path: string, params: Record<string, string | number> = {}
   const browserUrl = localProxy ? `${DEV_API_PROXY}${url.pathname}${url.search}` : url.toString()
   const response = await fetch(browserUrl)
   if (!response.ok) throw new Error(`DofusDB ${response.status} ${response.statusText}`)
+  return response.json()
+}
+
+async function dofusdudeGet(path: string, params: Record<string, string | number> = {}): Promise<any> {
+  const url = new URL(`${DOFUSDUDE_API_URL}${path}`)
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)))
+
+  if (isTauriRuntime()) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const text = await invoke<string>('http_get', { url: url.toString() })
+    return JSON.parse(text)
+  }
+
+  const localProxy =
+    typeof window !== 'undefined'
+    && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+  const browserUrl = localProxy ? `${DEV_DOFUSDUDE_PROXY}${url.pathname}${url.search}` : url.toString()
+  const response = await fetch(browserUrl)
+  if (!response.ok) throw new Error(`Dofusdude ${response.status} ${response.statusText}`)
   return response.json()
 }
 
@@ -208,6 +201,10 @@ function normalizeRecipe(rawRecipe: any): Recipe | null {
   }
 }
 
+function dofusdudeAlmanaxCache(previous: Partial<AlmanaxData> = {}): Record<string, AlmanaxCacheEntry> {
+  return previous.metadata?.almanax_source === 'dofusdude' ? previous.almanax || {} : {}
+}
+
 function idsChecksum(ids: Iterable<string>): string {
   const sorted = Array.from(ids).map(String).sort().join('\n')
   let hash = 0
@@ -247,6 +244,10 @@ function apiDate(day: Date): string {
   return `${String(day.getMonth() + 1).padStart(2, '0')}/${String(day.getDate()).padStart(2, '0')}/${day.getFullYear()}`
 }
 
+function dofusdudeDate(day: Date): string {
+  return localIsoDate(day)
+}
+
 function localIsoDate(day: Date): string {
   const year = day.getFullYear()
   const month = String(day.getMonth() + 1).padStart(2, '0')
@@ -270,166 +271,24 @@ function addDays(day: Date, count: number): Date {
   return next
 }
 
-function internalExact(day: Date): string {
-  return `${String(day.getDate()).padStart(2, '0')}/${String(day.getMonth() + 1).padStart(2, '0')}/${day.getFullYear()}`
+async function fetchDofusdudeAlmanax(day: Date): Promise<DofusdudeAlmanax> {
+  return dofusdudeGet(`/dofus3/v1/fr/almanax/${dofusdudeDate(day)}`)
 }
 
-function internalWildcard(day: Date): string {
-  return `${String(day.getDate()).padStart(2, '0')}/${String(day.getMonth() + 1).padStart(2, '0')}/*`
-}
-
-function wildcardQuery(day: Date): string {
-  return `${String(day.getMonth() + 1).padStart(2, '0')}/${String(day.getDate()).padStart(2, '0')}/*`
-}
-
-function methodQuery(method: AlmanaxMethodKey, day: Date): string {
-  if (method === 'almanax_exact') return `/almanax?date=${apiDate(day)}`
-  if (method === 'almanax_wildcard') return `/almanax?date=${wildcardQuery(day)}`
-  if (method === 'calendar_wildcard') return `/almanax-calendars?dates[]=${internalWildcard(day)}`
-  return `/almanax-calendars?dates=${internalExact(day)}`
-}
-
-function emptyMethodResult(method: AlmanaxMethodKey, query: string, error?: string): AlmanaxMethodResult {
-  return {
-    method,
-    query,
-    item_id: null,
-    quantity: null,
-    event_id: null,
-    event_name: '',
-    dates: [],
-    error,
-  }
-}
-
-function methodResultFromRaw(method: AlmanaxMethodKey, query: string, raw: any): AlmanaxMethodResult {
-  const rows = raw?.data ? raw.data : [raw]
-  const row = rows.find((candidate: any) => hasOffering(candidate))
-  if (!row) return emptyMethodResult(method, query)
-
-  return {
-    method,
-    query,
-    item_id: Number(row.itemIds?.[0]),
-    quantity: Number(row.quantities?.[0]),
-    event_id: row.id == null ? null : Number(row.id),
-    event_name: localText(row, 'name', ''),
-    dates: (row.dates || []).map(String),
-    raw: row,
-  }
-}
-
-function optionKey(itemId: number, quantity: number): string {
-  return `${itemId}:${quantity}`
-}
-
-function buildChoiceOptions(data: AlmanaxData, methods: Record<AlmanaxMethodKey, AlmanaxMethodResult>): AlmanaxChoiceOption[] {
-  const options = new Map<string, AlmanaxChoiceOption>()
-
-  Object.values(methods).forEach((result) => {
-    if (result.item_id == null || result.quantity == null) return
-    const key = optionKey(result.item_id, result.quantity)
-    const existing = options.get(key)
-    if (existing) {
-      existing.source_methods.push(result.method)
-      return
-    }
-
-    const item = data.items[String(result.item_id)]
-    options.set(key, {
-      option_key: key,
-      item_id: result.item_id,
-      quantity: result.quantity,
-      name: item?.name || `Item ${result.item_id}`,
-      category: item?.category || 'Ressource',
-      raw_type: item?.type_name || item?.raw_type || 'Item',
-      image_path: item?.image_url || item?.image_path || '',
-      source_methods: [result.method],
-    })
-  })
-
-  return Array.from(options.values())
-}
-
-function preferredOptionKey(scan: AlmanaxDayScan): string | undefined {
-  const calendar = scan.methods.calendar_wildcard
-  if (calendar.item_id != null && calendar.quantity != null) return optionKey(calendar.item_id, calendar.quantity)
-  const exact = scan.methods.almanax_exact
-  if (exact.item_id != null && exact.quantity != null) return optionKey(exact.item_id, exact.quantity)
-  return scan.options[0]?.option_key
-}
-
-async function getAlmanaxDay(dateQuery: string): Promise<any> {
-  return apiGet('/almanax', { date: dateQuery })
-}
-
-async function getCalendarWildcard(day: Date): Promise<any> {
-  return apiGet('/almanax-calendars', { 'dates[]': internalWildcard(day) })
-}
-
-async function getCalendarExactOverride(day: Date): Promise<any> {
-  return apiGet('/almanax-calendars', { dates: internalExact(day) })
-}
-
-function hasOffering(raw: any): boolean {
-  return Boolean(raw?.itemIds?.length && raw?.quantities?.length)
-}
-
-async function scanMethod(method: AlmanaxMethodKey, day: Date): Promise<AlmanaxMethodResult> {
-  const query = methodQuery(method, day)
-  try {
-    if (method === 'almanax_exact') {
-      return methodResultFromRaw(method, query, await getAlmanaxDay(apiDate(day)))
-    }
-    if (method === 'almanax_wildcard') {
-      return methodResultFromRaw(method, query, await getAlmanaxDay(wildcardQuery(day)))
-    }
-    if (method === 'calendar_wildcard') {
-      return methodResultFromRaw(method, query, await getCalendarWildcard(day))
-    }
-    return methodResultFromRaw(method, query, await getCalendarExactOverride(day))
-  } catch (error) {
-    return emptyMethodResult(method, query, String(error))
-  }
-}
-
-async function scanAlmanaxDay(data: AlmanaxData, date: string): Promise<AlmanaxDayScan> {
+async function refreshAlmanaxDay(data: AlmanaxData, date: string): Promise<void> {
   const day = parseApiDate(date)
-  const results = await Promise.all([
-    scanMethod('almanax_exact', day),
-    scanMethod('almanax_wildcard', day),
-    scanMethod('calendar_wildcard', day),
-    scanMethod('calendar_exact_override', day),
-  ])
-  const methods = Object.fromEntries(results.map((result) => [result.method, result])) as Record<AlmanaxMethodKey, AlmanaxMethodResult>
-  const itemIds = results
-    .map((result) => result.item_id)
-    .filter((itemId): itemId is number => itemId != null)
-  await refreshItemDetails(data, itemIds)
-
-  const scan: AlmanaxDayScan = {
-    date,
-    scanned_at: new Date().toISOString(),
-    methods,
-    options: buildChoiceOptions(data, methods),
+  const almanax = await fetchDofusdudeAlmanax(day)
+  const itemId = Number(almanax.tribute?.item?.ankama_id)
+  const quantity = Number(almanax.tribute?.quantity)
+  if (!Number.isFinite(itemId) || !Number.isFinite(quantity)) {
+    throw new Error(`Offrande Dofusdude invalide pour ${dofusdudeDate(day)}`)
   }
-  return scan
-}
 
-function appendScanHistory(data: AlmanaxData, scan: AlmanaxDayScan): void {
-  data.history ||= {}
-  const history = data.history[scan.date] || []
-  data.history[scan.date] = [...history, scan].slice(-60)
-}
-
-function applyScanSelection(data: AlmanaxData, scan: AlmanaxDayScan): void {
-  const selectedKey = data.choices?.[scan.date] || preferredOptionKey(scan)
-  const selected = scan.options.find((option) => option.option_key === selectedKey) || scan.options[0]
-  if (!selected) return
-  data.almanax[scan.date] = {
-    item_id: selected.item_id,
-    quantity: selected.quantity,
-    checked_at: scan.scanned_at,
+  await refreshItemDetails(data, [itemId])
+  data.almanax[date] = {
+    item_id: itemId,
+    quantity,
+    checked_at: new Date().toISOString(),
   }
 }
 
@@ -450,22 +309,10 @@ function currentMonthRange(): { start: string; end: string } {
   return { start: localIsoDate(today), end: localIsoDate(endDate) }
 }
 
-function latestScan(data: AlmanaxData, date: string): AlmanaxDayScan | null {
-  const scans = data.history?.[date] || []
-  return scans[scans.length - 1] || null
-}
-
-function isScanFromToday(scan: AlmanaxDayScan | null): scan is AlmanaxDayScan {
-  if (!scan?.scanned_at) return false
-  return localIsoDate(new Date(scan.scanned_at)) === localIsoDate(new Date())
-}
-
 function makeEntry(data: AlmanaxData, date: string, cached: AlmanaxCacheEntry, order: number, fromCache: boolean): ItemEntry | null {
   const item = data.items[String(cached.item_id)]
   if (!item) return null
   const displayType = item.type_name || item.raw_type
-  const scan = latestScan(data, date)
-  const option = scan?.options.find((candidate) => candidate.item_id === cached.item_id && candidate.quantity === cached.quantity)
   return {
     item_id: cached.item_id,
     quantity: cached.quantity,
@@ -477,26 +324,21 @@ function makeEntry(data: AlmanaxData, date: string, cached: AlmanaxCacheEntry, o
     image_path: item.image_url || item.image_path,
     order,
     from_cache: fromCache,
-    conflict: (scan?.options.length || 0) > 1,
-    source_methods: option?.source_methods || [],
   }
 }
 
 async function loadBundledAlmanaxData(previous: Partial<AlmanaxData> = {}): Promise<AlmanaxData> {
-  const [items, recipes, almanax, metadata] = await Promise.all([
+  const [items, recipes, metadata] = await Promise.all([
     fetch('/data/items.json').then((response) => response.json()).catch(() => ({})),
     fetch('/data/recipes.json').then((response) => response.json()).catch(() => ({})),
-    fetch('/data/almanax.json').then((response) => response.json()).catch(() => ({})),
     fetch('/data/metadata.json').then((response) => response.json()).catch(() => ({})),
   ])
 
   return {
     items,
     recipes,
-    almanax: { ...almanax, ...(previous.almanax || {}) },
-    history: previous.history || {},
-    choices: previous.choices || {},
-    metadata,
+    almanax: dofusdudeAlmanaxCache(previous),
+    metadata: { ...metadata, almanax_source: 'dofusdude' },
   }
 }
 
@@ -507,9 +349,7 @@ export async function loadAlmanaxData(): Promise<AlmanaxData> {
       const bundledMetadata = await fetch('/data/metadata.json').then((response) => response.json())
       const storedWithDefaults = {
         ...stored,
-        almanax: stored.almanax || {},
-        history: stored.history || {},
-        choices: stored.choices || {},
+        almanax: dofusdudeAlmanaxCache(stored),
         metadata: stored.metadata || {},
       }
       const bundledIsNewer =
@@ -521,10 +361,8 @@ export async function loadAlmanaxData(): Promise<AlmanaxData> {
     } catch {
       return {
         ...stored,
-        almanax: stored.almanax || {},
-        history: stored.history || {},
-        choices: stored.choices || {},
-        metadata: stored.metadata || {},
+        almanax: dofusdudeAlmanaxCache(stored),
+        metadata: { ...(stored.metadata || {}), almanax_source: 'dofusdude' },
       }
     }
   }
@@ -569,48 +407,13 @@ export async function refreshItemDetails(data: AlmanaxData, itemIds: number[], p
 }
 
 export async function refreshAlmanaxEntries(data: AlmanaxData, dates: string[], progress?: (message: string) => void): Promise<ItemEntry[]> {
-  const freshScans: AlmanaxDayScan[] = []
-  const datesToScan = dates.filter((date) => {
-    const scan = latestScan(data, date)
-    if (isScanFromToday(scan)) {
-      applyScanSelection(data, scan)
-      return false
-    }
-    return true
+  await mapWithConcurrency(dates, 4, async (date, index) => {
+    progress?.(`Almanax ${index + 1}/${dates.length}`)
+    await refreshAlmanaxDay(data, date)
   })
-
-  if (datesToScan.length) {
-    const scans = await mapWithConcurrency(datesToScan, 4, async (date, index) => {
-      progress?.(`Almanax ${index + 1}/${datesToScan.length}`)
-      return scanAlmanaxDay(data, date)
-    })
-    freshScans.push(...scans)
-  } else {
-    progress?.('Almanax en cache')
-  }
-
-  freshScans.forEach((scan) => {
-    appendScanHistory(data, scan)
-    applyScanSelection(data, scan)
-  })
-
-  if (freshScans.length) data.metadata = { ...data.metadata, last_almanax_sync: new Date().toISOString() }
+  data.metadata = { ...data.metadata, last_almanax_sync: new Date().toISOString(), almanax_source: 'dofusdude' }
   await saveStoredAlmanaxData(data)
   return loadCachedEntries(data, dates)
-}
-
-export function latestAlmanaxScans(data: AlmanaxData, dates: string[]): AlmanaxDayScan[] {
-  return dates
-    .map((date) => latestScan(data, date))
-    .filter((scan): scan is AlmanaxDayScan => Boolean(scan))
-}
-
-export async function selectAlmanaxChoice(data: AlmanaxData, date: string, optionKey: string): Promise<void> {
-  data.choices ||= {}
-  data.choices[date] = optionKey
-  const scan = latestScan(data, date)
-  if (scan) applyScanSelection(data, scan)
-  await saveStoredAlmanaxData(data)
 }
 
 export async function syncAlmanaxData(progress?: (message: string) => void): Promise<AlmanaxData> {
@@ -623,19 +426,18 @@ export async function syncAlmanaxData(progress?: (message: string) => void): Pro
   const items = Object.fromEntries(normalizedItems.map((item) => [String(item.id), item]))
   const normalizedRecipes = rawRecipes.map(normalizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
   const recipes = Object.fromEntries(normalizedRecipes.map((recipe) => [String(recipe.result_id), recipe]))
-  const previous: Partial<AlmanaxData> = await loadAlmanaxData().catch(() => ({ almanax: {} }))
+  const previous: Partial<AlmanaxData> = await loadAlmanaxData().catch(() => ({ almanax: {}, metadata: {} }))
 
   const data: AlmanaxData = {
     items,
     recipes,
-    almanax: previous.almanax || {},
-    history: previous.history || {},
-    choices: previous.choices || {},
+    almanax: dofusdudeAlmanaxCache(previous),
     metadata: {
       item_total: Object.keys(items).length,
       recipe_total: Object.keys(recipes).length,
       item_ids_checksum: idsChecksum(Object.keys(items)),
       recipe_ids_checksum: idsChecksum(Object.keys(recipes)),
+      almanax_source: 'dofusdude',
       last_sync: new Date().toISOString(),
     },
   }
