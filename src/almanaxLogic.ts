@@ -536,18 +536,17 @@ function makeEntry(data: AlmanaxData, date: string, cached: AlmanaxCacheEntry, o
 }
 
 async function loadBundledAlmanaxData(previous: Partial<AlmanaxData> = {}): Promise<AlmanaxData> {
-  const [items, recipes, metadata, sortMetadata] = await Promise.all([
-    fetch('/data/items.json').then((response) => response.json()).catch(() => ({})),
-    fetch('/data/recipes.json').then((response) => response.json()).catch(() => ({})),
+  const [metadata, sortMetadata] = await Promise.all([
     fetch('/data/metadata.json').then((response) => response.json()).catch(() => ({})),
     loadSortMetadata(),
   ])
 
   return {
-    items,
-    recipes,
+    items: {},
+    recipes: {},
+    itemSets: {},
     almanax: dofusdudeAlmanaxCache(previous),
-    metadata: { ...metadata, almanax_source: 'dofusdude' },
+    metadata: { ...metadata, almanax_source: 'dofusdude', shared_sync_state: 'bootstrap' },
     ...sortMetadata,
   }
 }
@@ -589,7 +588,16 @@ function normalizeSharedItems(items: Record<string, CachedItem> | undefined): Re
 
 function applySharedCatalog(data: AlmanaxData, shared: SharedCatalogData | null): AlmanaxData {
   const items = normalizeSharedItems(shared?.items)
-  if (!items || !shared?.recipes || !Object.keys(shared.recipes).length) return data
+  if (shared?.metadata?.shared_sync_state !== 'complete' || !items || !shared?.recipes || !Object.keys(shared.recipes).length) return {
+    ...data,
+    items: {},
+    recipes: {},
+    itemSets: {},
+    metadata: {
+      ...data.metadata,
+      shared_sync_state: 'bootstrap',
+    },
+  }
   return {
     ...data,
     items,
@@ -646,11 +654,9 @@ export async function loadAlmanaxData(): Promise<AlmanaxData> {
 
       if (!bundledIsNewer) {
         if (normalizedStored.changed) void saveStoredAlmanaxData(storedWithDefaults).catch(() => {})
-        if (!sharedCatalog) void saveSharedCatalog(toSharedCatalog(storedWithDefaults, sharedCatalog)).catch(() => {})
         return storedWithDefaults
       }
       const bundled = stripBundledImagePaths(await loadBundledAlmanaxData(storedWithDefaults)).data
-      if (!sharedCatalog) void saveSharedCatalog(toSharedCatalog(bundled, sharedCatalog)).catch(() => {})
       return applySharedCatalog(bundled, sharedCatalog)
     } catch {
       return applySharedCatalog({
@@ -663,7 +669,6 @@ export async function loadAlmanaxData(): Promise<AlmanaxData> {
   }
 
   const bundled = stripBundledImagePaths(await loadBundledAlmanaxData()).data
-  if (!sharedCatalog) void saveSharedCatalog(toSharedCatalog(bundled, sharedCatalog)).catch(() => {})
   return applySharedCatalog(bundled, sharedCatalog)
 }
 
