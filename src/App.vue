@@ -1386,8 +1386,8 @@ onBeforeUnmount(() => {
       </section>
     </section>
 
-    <div v-if="syncVisible" class="modal-backdrop catalog-sync-dialog">
-      <section class="sync-modal sync-progress-card glass-surface" role="status" aria-live="polite">
+    <div v-if="syncVisible" class="sync-dialog catalog-sync-dialog">
+      <section class="sync-card sync-progress-card glass-surface" role="status" aria-live="polite">
         <header class="sync-progress-head">
           <div>
             <span>Synchronisation des données DofusDB</span>
