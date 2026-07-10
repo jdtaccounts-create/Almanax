@@ -674,6 +674,30 @@ async function checkAppUpdate(showPrompt: boolean): Promise<void> {
   }
 }
 
+async function acquireAppUpdateLock(): Promise<() => void> {
+  let heartbeatTimer: number | undefined
+  while (true) {
+    try {
+      const lockStatus = await acquireSharedSyncLock('Almanax', 'app-update')
+      if (lockStatus.acquired) {
+        heartbeatTimer = window.setInterval(() => {
+          void heartbeatSharedSyncLock('Almanax', 'app-update').catch(() => {})
+        }, 1000)
+        return () => {
+          if (heartbeatTimer) window.clearInterval(heartbeatTimer)
+          void releaseSharedSyncLock().catch(() => {})
+        }
+      }
+      const owner = lockStatus.lock?.app || 'Une autre app'
+      updateProgress.value = `${owner} termine une operation commune. Almanax attend son tour...`
+      await sleep(1500)
+    } catch {
+      // If the shared lock is unavailable, keep the updater usable.
+      return () => {}
+    }
+  }
+}
+
 async function installAppUpdate(): Promise<void> {
   if (installingAppUpdate.value) return
   if (!appUpdate.value) {
@@ -682,10 +706,13 @@ async function installAppUpdate(): Promise<void> {
   }
   installingAppUpdate.value = true
   showAppUpdatePrompt.value = true
-  updateProgress.value = 'Telechargement de la mise a jour...'
+  updateProgress.value = 'Preparation de la mise a jour...'
   let downloaded = 0
   let total: number | undefined
+  let releaseAppUpdateLock: (() => void) | null = null
   try {
+    releaseAppUpdateLock = await acquireAppUpdateLock()
+    updateProgress.value = 'Telechargement de la mise a jour...'
     await appUpdate.value.downloadAndInstall((event) => {
       if (event.event === 'Started') {
         downloaded = 0
@@ -700,12 +727,15 @@ async function installAppUpdate(): Promise<void> {
         updateProgress.value = 'Installation terminee, redemarrage...'
       }
     })
+    releaseAppUpdateLock()
+    releaseAppUpdateLock = null
     const { relaunch } = await import('@tauri-apps/plugin-process')
     await relaunch()
   } catch (error) {
     updateProgress.value = `Mise a jour impossible : ${String(error)}`
     status.value = updateProgress.value
   } finally {
+    if (releaseAppUpdateLock) releaseAppUpdateLock()
     installingAppUpdate.value = false
   }
 }
