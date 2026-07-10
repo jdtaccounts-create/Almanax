@@ -45,6 +45,9 @@ export interface CachedItem {
   type_name?: string
   type_id?: number | null
   item_type_category_id?: number | null
+  criterions?: string
+  quests_that_use?: number[]
+  quests_that_reward?: number[]
   image_url: string
   image_path: string
 }
@@ -339,6 +342,9 @@ function normalizeApiItem(rawItem: any, previous?: CachedItem): CachedItem | nul
     type_name: rawItem?.type?.name?.fr || rawItem?.type_name || '',
     type_id: Number(rawItem?.typeId ?? rawItem?.type?.id) || null,
     item_type_category_id: Number(rawItem?.type?.categoryId) || null,
+    criterions: rawItem.criterions || '',
+    quests_that_use: (rawItem.questsThatUse || rawItem.quests_that_use || []).map(Number),
+    quests_that_reward: (rawItem.questsThatReward || rawItem.quests_that_reward || []).map(Number),
     image_url: imageUrl,
     image_path: localImagePath || '',
   }
