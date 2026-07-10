@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Almanax",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "identifier": "fr.moufle.almanax",
   "build": {
     "frontendDist": "../dist",
@@ -48,7 +48,8 @@
         "https://github.com/jdtaccounts-create/Almanax/releases/latest/download/latest.json"
       ],
       "windows": {
-        "installMode": "quiet"
+        "installMode": "quiet",
+        "installerArgs": ["/currentuser"]
       }
     }
   }
