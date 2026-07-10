@@ -64,12 +64,40 @@ try {
     throw new Error(`Fin de mois invalide : ${defaultEndDate}, attendu ${expectedMonthEnd}`)
   }
   await page.waitForFunction(() => document.body.innerText.includes('Bouclier de Bowisse') || document.body.innerText.includes('offrandes'))
+  const firstOwnedInput = page.locator('.offering-columns .item-line .owned-input').first()
+  await firstOwnedInput.fill('0')
+  await firstOwnedInput.hover()
+  await page.mouse.wheel(0, -100)
+  await page.waitForFunction(() => document.querySelector('.offering-columns .item-line .owned-input')?.value === '1')
+  if (!await page.locator('.offering-columns .item-line').first().evaluate((row) => row.classList.contains('done'))) {
+    throw new Error('La molette sur quantité possédée ne coche pas automatiquement l’offrande')
+  }
+  await page.waitForTimeout(700)
+  await page.mouse.wheel(0, 100)
+  await page.waitForFunction(() => document.querySelector('.offering-columns .item-line .owned-input')?.value === '0')
+  if (await page.locator('.offering-columns .item-line').first().evaluate((row) => row.classList.contains('done'))) {
+    throw new Error('Baisser la quantité possédée ne décoche pas l’offrande')
+  }
+  await page.waitForTimeout(700)
   await page.getByTitle(/Mode jour|Mode nuit/).click()
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
   await page.locator('.craft-rail').click()
   await page.waitForTimeout(300)
   const firstCraftBadge = (await page.locator('.craft-column header > span').first().textContent()) || ''
   if (!/^\d+\/\d+$/.test(firstCraftBadge.trim())) throw new Error(`Badge craft invalide : ${firstCraftBadge}`)
+  const firstCraftOwnedInput = page.locator('.craft-drawer.open .item-line .owned-input').first()
+  await firstCraftOwnedInput.fill('0')
+  await firstCraftOwnedInput.press('Enter')
+  await firstCraftOwnedInput.hover()
+  await firstCraftOwnedInput.evaluate((input) => {
+    input.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }))
+  })
+  await page.waitForFunction(() => document.querySelector('.craft-drawer.open .item-line .owned-input')?.value === '1')
+  await page.waitForTimeout(700)
+  await firstCraftOwnedInput.evaluate((input) => {
+    input.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }))
+  })
+  await page.waitForFunction(() => document.querySelector('.craft-drawer.open .item-line .owned-input')?.value === '0')
   const firstCraftCheckbox = page.locator('.craft-drawer.open .item-line input[type="checkbox"]').first()
   await firstCraftCheckbox.click()
   await page.waitForTimeout(100)

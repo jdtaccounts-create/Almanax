@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "almanax"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "log",
  "reqwest 0.12.28",
@@ -56,6 +56,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

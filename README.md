@@ -1,86 +1,73 @@
 # Almanax
 
-Almanax est une application Windows non officielle pour préparer les offrandes Almanax de DOFUS sur une période donnée.
+Almanax est une application Windows communautaire, gratuite et non officielle pour préparer les offrandes Almanax de DOFUS sur une période donnée.
 
-Projet communautaire gratuit, non commercial, non affilié à Ankama, DofusDB ou Dofusdude.
+## Présentation
 
-DOFUS et Ankama sont des marques ou propriétés de leurs ayants droit respectifs.
+Almanax récupère les offrandes par date, les agrège sur la période choisie et construit une liste exploitable d'équipements, consommables et ressources. Quand une offrande ou une ressource est craftable, le plan de craft récursif permet de suivre les crafts principaux, les sous-crafts et les ingrédients nécessaires.
 
-Données d'items et recettes issues de DofusDB. Utilisation soumise à la LPNC-IA 1.0.
-
-Offrandes Almanax récupérées via l'API publique Dofusdude.
-
-Voir aussi [NOTICE.md](NOTICE.md) pour les crédits et notes de droits.
-
-## Avertissement droits
-
-Almanax est un outil communautaire non officiel. Il n'est pas affilié, approuvé, sponsorisé ou maintenu par Ankama, DofusDB, Dofusdude ou leurs ayants droit.
-
-Les noms, visuels, icônes et données liés à DOFUS restent la propriété de leurs ayants droit respectifs. Les données sont utilisées uniquement pour afficher les offrandes, items et crafts dans un cadre gratuit et non commercial.
+L'application utilise une base locale commune pour les items, recettes, panoplies et images utiles. Une fois la synchronisation terminée, les données nécessaires restent disponibles hors ligne.
 
 ## Fonctionnalités
 
 - Chargement des offrandes par jour, période ou mois courant.
 - Calendrier intégré pour choisir les dates.
+- Agrégation exacte des offrandes et des ressources communes.
 - Séparation par équipements, consommables et ressources.
-- Cases à cocher pour suivre les items déjà prêts.
-- Ouverture directe des fiches DofusDB.
+- Quantités possédées ajustables au clavier ou à la molette au survol.
+- Cases à cocher synchronisées avec les quantités.
 - Plan de craft récursif avec base à craft, sous-crafts et ingrédients.
-- Synchronisation locale des items et recettes DofusDB.
-- Cache de démarrage embarqué dans `public/data`.
-- Mode clair et mode sombre.
+- Tri enrichi des ressources par récoltables, origines de monstres, familles, types et ordre alphabétique.
+- Liens directs vers les fiches DofusDB.
+- Modes clair et sombre.
+- Synchronisation automatique des données, recettes, panoplies et images utiles.
+- Mises à jour automatiques signées.
 
-## Logique Almanax
+## Données hors ligne
 
-L'application récupère les offrandes Almanax via l'API publique Dofusdude.
+La base locale commune est stockée dans :
 
-DofusDB reste utilisé pour la base locale d'items, les recettes, les images, les catégories et l'ouverture des fiches d'items.
+```text
+%LOCALAPPDATA%\DofusCompanionData
+```
 
-## Installer l'application
+Elle contient le catalogue DofusDB synchronisé, les recettes, les panoplies, les images utiles et les échecs d'images déjà connus. Les images inutiles ou devenues obsolètes sont nettoyées après une synchronisation réussie.
 
-Télécharge l'application depuis la dernière release :
+Les offrandes Almanax sont récupérées via l'API publique Dofusdude puis mises en cache localement.
 
-[Télécharger la dernière version d'Almanax](https://github.com/jdtaccounts-create/Almanax/releases/latest)
+## Télécharger
+
+La dernière version Windows est disponible dans les [releases GitHub](https://github.com/jdtaccounts-create/Almanax/releases/latest).
 
 Fichier recommandé :
 
 - `Almanax_x.x.x_x64-setup.exe` pour l'installation classique Windows.
 
-Autres fichiers disponibles :
+## Désinstallation
 
-- `Almanax_x.x.x_x64_en-US.msi` pour le format MSI.
+La désinstallation Windows retire l'application installée. Le dossier `%LOCALAPPDATA%\DofusCompanionData` n'est pas supprimé automatiquement, car il peut être partagé par plusieurs outils locaux utilisant les mêmes données DOFUS.
 
-## Développement
+Pour tout supprimer après avoir désinstallé les outils concernés, supprimer manuellement :
 
-Prérequis :
+```text
+%LOCALAPPDATA%\DofusCompanionData
+```
 
-- Node.js
-- Rust/Cargo
-
-Commandes utiles :
+## Développement local
 
 ```powershell
 npm install
-npm run dev
-npm run build
 npm run smoke
-npm run sync:data
-npm run tauri -- build
-npm run build:signed
+npm run build
+npm run dev
 ```
 
-L'exécutable généré se trouve dans :
+Ouvrir ensuite `http://127.0.0.1:5175`.
 
-```text
-src-tauri/target/release/almanax.exe
-```
+## Publication
 
-## Données et droits
+La procédure de build signé et de release est décrite dans [RELEASE.md](RELEASE.md). La clé privée de signature ne doit jamais être affichée ni commitée.
 
-Cette application utilise l'API publique Dofusdude pour les offrandes Almanax.
+## Crédits et droits
 
-Elle utilise aussi des données publiques issues de DofusDB pour les items, recettes, catégories et images d'items.
-
-Le projet est publié à titre non commercial. Il ne doit pas être vendu, monétisé par publicité, abonnement ou intégré dans un service commercial.
-
-Si un ayant droit souhaite une modification, une attribution différente ou le retrait de certains contenus, le dépôt pourra être ajusté en conséquence.
+Almanax n'est affilié ni à Ankama, ni à DofusDB, ni à Dofusdude. Les crédits détaillés, conditions d'utilisation des données et mentions de droits figurent dans [NOTICE.md](NOTICE.md).

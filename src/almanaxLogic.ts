@@ -1,4 +1,15 @@
-import { loadStoredAlmanaxData, saveStoredAlmanaxData } from './almanaxStorage'
+import {
+  loadCachedImageIds,
+  loadFailedCachedImages,
+  loadSharedCatalog,
+  loadStoredAlmanaxData,
+  pruneCachedImages,
+  saveCachedImage,
+  saveFailedCachedImages,
+  saveSharedCatalog,
+  saveStoredAlmanaxData,
+  type FailedCachedImage,
+} from './almanaxStorage'
 
 const API_URL = 'https://api.dofusdb.fr'
 const DOFUSDUDE_API_URL = 'https://api.dofusdu.de'
@@ -6,10 +17,25 @@ const DEV_API_PROXY = '/dofusdb-api'
 const DEV_DOFUSDUDE_PROXY = '/dofusdude-api'
 const PAGE_LIMIT = 50
 const RECIPE_PAGE_LIMIT = 50
-const PAGE_CONCURRENCY = 4
+const SHARED_DOFUSDB_CONCURRENCY = 8
+const ALMANAX_ENTRY_CONCURRENCY = 4
+const REQUEST_TIMEOUT_MS = 8_000
+const ESTIMATED_JSON_COMPRESSION_RATIO = 0.16
+const ESTIMATED_IMAGE_BYTES = 40 * 1024
+const FAILED_IMAGE_RETRY_MS = 24 * 60 * 60 * 1000
+const TRANSIENT_FAILED_IMAGE_RETRY_MS = 15 * 60 * 1000
 
 export const CATEGORIES = ['Equipement', 'Consommable', 'Ressource'] as const
 export type Category = typeof CATEGORIES[number]
+
+export type AlmanaxSyncEndpoint = 'items' | 'recipes' | 'itemSets'
+
+export type AlmanaxSyncProgressEvent =
+  | { kind: 'endpoint'; endpoint: AlmanaxSyncEndpoint; label: string; done: number; total: number; bytesDone: number }
+  | { kind: 'images'; done: number; total: number; bytesDone: number; bytesTotal?: number }
+  | { kind: 'message'; message: string }
+
+export type AlmanaxSyncProgress = (event: AlmanaxSyncProgressEvent | string) => void
 
 export interface CachedItem {
   id: number
@@ -23,10 +49,49 @@ export interface CachedItem {
   image_path: string
 }
 
+export interface HarvestableResource {
+  item_id: number
+  job: string
+  rarity: 'normal' | 'rare' | 'meat'
+  source_item_id?: number
+  source_monster_id?: number
+  source_monster_name?: string
+  order: number
+}
+
+export interface ResourceOrigin {
+  item_id: number
+  origins: Array<{
+    monster_id: number
+    monster_name: string
+    race_id: number | null
+    race_name: string
+    super_race_id: number | null
+    super_race_name: string
+    min_level: number | null
+    max_level: number | null
+    drop_rate: number
+    has_criterions: boolean
+  }>
+}
+
+export interface SortMetadata {
+  harvestables: Record<string, HarvestableResource>
+  resourceOrigins: Record<string, ResourceOrigin>
+}
+
 export interface Recipe {
   result_id: number
   ingredient_ids: number[]
   quantities: number[]
+}
+
+export interface ItemSet {
+  id: number
+  name: string
+  name_norm: string
+  compact: string
+  item_ids: number[]
 }
 
 export interface AlmanaxCacheEntry {
@@ -58,6 +123,16 @@ export interface AlmanaxData {
   recipes: Record<string, Recipe | null>
   almanax: Record<string, AlmanaxCacheEntry>
   metadata: Record<string, unknown>
+  sortMetadata?: SortMetadata
+  itemSets?: Record<string, ItemSet>
+}
+
+interface SharedCatalogData {
+  items?: Record<string, CachedItem>
+  recipes?: Record<string, Recipe>
+  itemSets?: Record<string, ItemSet>
+  metadata?: Record<string, unknown>
+  sortMetadata?: SortMetadata
 }
 
 export interface ItemEntry {
@@ -98,6 +173,9 @@ export interface DatabaseStatus {
   localItemTotal: number
   remoteRecipeTotal: number
   localRecipeTotal: number
+  remoteItemSetTotal: number
+  localItemSetTotal: number
+  missingImageGroups: number
   needsSync: boolean
   missingLabels: string[]
 }
@@ -106,23 +184,91 @@ function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
-async function apiGet(path: string, params: Record<string, string | number> = {}): Promise<any> {
+function isRemoteImagePath(path: string | undefined): boolean {
+  return /^https?:\/\//.test(path || '')
+}
+
+function itemImageSource(item: CachedItem): string {
+  if (isRemoteImagePath(item.image_url)) return item.image_url || ''
+  return isRemoteImagePath(item.image_path) ? item.image_path : ''
+}
+
+export function groupMissingImages(data: AlmanaxData, cachedIds: ReadonlySet<number>): Array<[string, CachedItem[]]> {
+  const missingBySource = Object.values(data.items || {}).reduce((groups, item) => {
+    const source = itemImageSource(item)
+    if (!source || cachedIds.has(item.id)) return groups
+    const group = groups.get(source) || []
+    group.push(item)
+    groups.set(source, group)
+    return groups
+  }, new Map<string, CachedItem[]>())
+  return [...missingBySource.entries()]
+}
+
+function failedImageRetryMs(row: FailedCachedImage): number {
+  return /failed to fetch|timeout|network|abort/i.test(row.reason || '')
+    ? TRANSIENT_FAILED_IMAGE_RETRY_MS
+    : FAILED_IMAGE_RETRY_MS
+}
+
+function isTransientImageFailure(row: FailedCachedImage): boolean {
+  return failedImageRetryMs(row) === TRANSIENT_FAILED_IMAGE_RETRY_MS
+}
+
+function isRecentFailedImage(row: FailedCachedImage, now = Date.now()): boolean {
+  return now - Date.parse(row.failedAt) < failedImageRetryMs(row)
+}
+
+function recentFailedImageIds(rows: FailedCachedImage[] | null, now = Date.now()): Set<number> {
+  return new Set((rows || [])
+    .filter((row) => isRecentFailedImage(row, now))
+    .map((row) => row.itemId))
+}
+
+function mergeFailedImages(previous: FailedCachedImage[] | null, next: FailedCachedImage[]): FailedCachedImage[] {
+  const recent = (previous || []).filter((row) => isRecentFailedImage(row))
+  const byId = new Map(recent.map((row) => [row.itemId, row]))
+  next.forEach((row) => byId.set(row.itemId, row))
+  return [...byId.values()]
+}
+
+function estimatedCompressedJsonBytes(text: string, fallbackBytes?: number | null): number {
+  const knownBytes = Number(fallbackBytes || 0)
+  if (knownBytes > 0) return knownBytes
+  return Math.max(1, Math.round(new Blob([text]).size * ESTIMATED_JSON_COMPRESSION_RATIO))
+}
+
+function browserProxyUrl(url: URL, proxyBase: string): string {
+  const localProxy =
+    typeof window !== 'undefined'
+    && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+  return localProxy ? `${proxyBase}${url.pathname}${url.search}` : url.toString()
+}
+
+async function apiGetPayload(path: string, params: Record<string, string | number> = {}): Promise<{ data: any; bytes: number }> {
   const url = new URL(`${API_URL}${path}`)
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)))
 
   if (isTauriRuntime()) {
     const { invoke } = await import('@tauri-apps/api/core')
     const text = await invoke<string>('http_get', { url: url.toString() })
-    return JSON.parse(text)
+    return { data: JSON.parse(text), bytes: estimatedCompressedJsonBytes(text) }
   }
 
-  const localProxy =
-    typeof window !== 'undefined'
-    && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
-  const browserUrl = localProxy ? `${DEV_API_PROXY}${url.pathname}${url.search}` : url.toString()
-  const response = await fetch(browserUrl)
+  const browserUrl = browserProxyUrl(url, DEV_API_PROXY)
+  const response = await fetch(browserUrl, { cache: 'no-store', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
   if (!response.ok) throw new Error(`DofusDB ${response.status} ${response.statusText}`)
-  return response.json()
+  const text = await response.text()
+  const headerBytes = Number(response.headers.get('content-length') || 0)
+  const timingEntries = performance
+    .getEntriesByName(browserUrl)
+    .filter((entry): entry is PerformanceResourceTiming => 'encodedBodySize' in entry)
+  const timingBytes = timingEntries.length ? timingEntries[timingEntries.length - 1].encodedBodySize : 0
+  return { data: JSON.parse(text), bytes: estimatedCompressedJsonBytes(text, headerBytes || timingBytes || 0) }
+}
+
+async function apiGet(path: string, params: Record<string, string | number> = {}): Promise<any> {
+  return (await apiGetPayload(path, params)).data
 }
 
 async function dofusdudeGet(path: string, params: Record<string, string | number> = {}): Promise<any> {
@@ -135,10 +281,7 @@ async function dofusdudeGet(path: string, params: Record<string, string | number
     return JSON.parse(text)
   }
 
-  const localProxy =
-    typeof window !== 'undefined'
-    && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
-  const browserUrl = localProxy ? `${DEV_DOFUSDUDE_PROXY}${url.pathname}${url.search}` : url.toString()
+  const browserUrl = browserProxyUrl(url, DEV_DOFUSDUDE_PROXY)
   const response = await fetch(browserUrl)
   if (!response.ok) throw new Error(`Dofusdude ${response.status} ${response.statusText}`)
   return response.json()
@@ -173,12 +316,21 @@ function extractRawType(rawItem: any): string {
   return rawItem?.type?.superType?.name?.fr || rawItem?.type?.name?.fr || rawItem?.superType?.name?.fr || 'Equipement'
 }
 
-function normalizeApiItem(rawItem: any): CachedItem | null {
+function isLocalImagePath(path: string | undefined): boolean {
+  return Boolean(path && /^https?:\/\//.test(path))
+}
+
+function normalizeApiItem(rawItem: any, previous?: CachedItem): CachedItem | null {
   const id = rawItem?.id
   if (id == null) return null
   const name = localText(rawItem, 'name', `Item ${id}`)
   const rawType = extractRawType(rawItem)
   const imageUrl = rawItem.img || rawItem.image || rawItem.image_url || ''
+  const localImagePath = isLocalImagePath(previous?.image_path)
+    ? previous?.image_path
+    : isLocalImagePath(rawItem.image_path)
+      ? rawItem.image_path
+      : ''
   return {
     id: Number(id),
     name,
@@ -188,7 +340,7 @@ function normalizeApiItem(rawItem: any): CachedItem | null {
     type_id: Number(rawItem?.typeId ?? rawItem?.type?.id) || null,
     item_type_category_id: Number(rawItem?.type?.categoryId) || null,
     image_url: imageUrl,
-    image_path: rawItem.image_path || imageUrl,
+    image_path: localImagePath || '',
   }
 }
 
@@ -198,6 +350,22 @@ function normalizeRecipe(rawRecipe: any): Recipe | null {
     result_id: Number(rawRecipe.resultId),
     ingredient_ids: (rawRecipe.ingredientIds || []).map(Number),
     quantities: (rawRecipe.quantities || []).map(Number),
+  }
+}
+
+function compactText(value: string): string {
+  return normalizeText(value).replace(/\s/g, '')
+}
+
+function normalizeSet(rawSet: any): ItemSet | null {
+  if (rawSet?.id == null) return null
+  const name = rawSet.name?.fr || rawSet.slug?.fr || `Panoplie ${rawSet.id}`
+  return {
+    id: Number(rawSet.id),
+    name,
+    name_norm: normalizeText(name),
+    compact: compactText(name),
+    item_ids: (rawSet.items || []).map((item: any) => Number(item.id)).filter(Number.isFinite),
   }
 }
 
@@ -215,21 +383,61 @@ function idsChecksum(ids: Iterable<string>): string {
   return String(hash >>> 0)
 }
 
-async function fetchPaginated(path: string, limit: number, label: string, progress?: (message: string) => void): Promise<any[]> {
-  const firstPage = await apiGet(path, { $limit: limit, $skip: 0 })
+function latestUpdatedAt(rows: any[]): string {
+  return rows.reduce((latest, row) => {
+    const value = String(row?.updatedAt || '')
+    return value > latest ? value : latest
+  }, '')
+}
+
+async function endpointInfo(path: string): Promise<{ total: number; latestUpdatedAt: string }> {
+  const page = await apiGet(path, { $limit: 1, $skip: 0, '$sort[updatedAt]': -1 })
+  return {
+    total: Number(page.total || 0),
+    latestUpdatedAt: String(page.data?.[0]?.updatedAt || ''),
+  }
+}
+
+function localRemoteMetadata(data: AlmanaxData, sharedCatalog: SharedCatalogData | null, endpoint: 'items' | 'recipes' | 'itemSets'): { total: number; latestUpdatedAt: string } {
+  if (data.metadata?.shared_sync_state === 'bootstrap' || sharedCatalog?.metadata?.shared_sync_state === 'bootstrap') {
+    return { total: 0, latestUpdatedAt: '' }
+  }
+  const remote = (data.metadata?.remote || sharedCatalog?.metadata?.remote) as Record<string, { total?: number; latestUpdatedAt?: string }> | undefined
+  const totalKeys = {
+    items: 'item_total',
+    recipes: 'recipe_total',
+    itemSets: 'item_set_total',
+  }
+  const fallbackTotals = {
+    items: Object.keys(data.items || sharedCatalog?.items || {}).length,
+    recipes: Object.keys(data.recipes || sharedCatalog?.recipes || {}).length,
+    itemSets: Object.keys(data.itemSets || sharedCatalog?.itemSets || {}).length,
+  }
+  return {
+    total: Number(remote?.[endpoint]?.total || data.metadata?.[totalKeys[endpoint]] || sharedCatalog?.metadata?.[totalKeys[endpoint]] || 0) || fallbackTotals[endpoint],
+    latestUpdatedAt: String(remote?.[endpoint]?.latestUpdatedAt || ''),
+  }
+}
+
+async function fetchPaginated(path: string, limit: number, endpoint: AlmanaxSyncEndpoint, label: string, progress?: AlmanaxSyncProgress): Promise<any[]> {
+  const firstPayload = await apiGetPayload(path, { $limit: limit, $skip: 0 })
+  const firstPage = firstPayload.data
   const total = Number(firstPage.total || 0)
   const rows = [...(firstPage.data || [])]
   const pageLimit = rows.length || Number(firstPage.limit || limit) || limit
-  progress?.(`${label} ${Math.min(rows.length, total)}/${total}`)
+  let bytesDone = firstPayload.bytes
+  progress?.({ kind: 'endpoint', endpoint, label, done: Math.min(rows.length, total), total, bytesDone })
 
   const skips: number[] = []
   for (let skip = pageLimit; skip < total; skip += pageLimit) skips.push(skip)
 
-  await mapWithConcurrency(skips, PAGE_CONCURRENCY, async (skip) => {
-    const page = await apiGet(path, { $limit: limit, $skip: skip })
+  await mapWithConcurrency(skips, SHARED_DOFUSDB_CONCURRENCY, async (skip) => {
+    const payload = await apiGetPayload(path, { $limit: limit, $skip: skip })
+    const page = payload.data
     const data = page.data || []
     rows.push(...data)
-    progress?.(`${label} ${Math.min(rows.length, total)}/${total}`)
+    bytesDone += payload.bytes
+    progress?.({ kind: 'endpoint', endpoint, label, done: Math.min(rows.length, total), total, bytesDone })
     return data.length
   })
 
@@ -321,17 +529,18 @@ function makeEntry(data: AlmanaxData, date: string, cached: AlmanaxCacheEntry, o
     category: item.category,
     raw_type: displayType,
     image_url: item.image_url,
-    image_path: item.image_url || item.image_path,
+    image_path: item.image_path,
     order,
     from_cache: fromCache,
   }
 }
 
 async function loadBundledAlmanaxData(previous: Partial<AlmanaxData> = {}): Promise<AlmanaxData> {
-  const [items, recipes, metadata] = await Promise.all([
+  const [items, recipes, metadata, sortMetadata] = await Promise.all([
     fetch('/data/items.json').then((response) => response.json()).catch(() => ({})),
     fetch('/data/recipes.json').then((response) => response.json()).catch(() => ({})),
     fetch('/data/metadata.json').then((response) => response.json()).catch(() => ({})),
+    loadSortMetadata(),
   ])
 
   return {
@@ -339,35 +548,123 @@ async function loadBundledAlmanaxData(previous: Partial<AlmanaxData> = {}): Prom
     recipes,
     almanax: dofusdudeAlmanaxCache(previous),
     metadata: { ...metadata, almanax_source: 'dofusdude' },
+    ...sortMetadata,
+  }
+}
+
+function stripBundledImagePaths<T extends { items?: Record<string, CachedItem> }>(data: T): { data: T; changed: boolean } {
+  let changed = false
+  const items = Object.fromEntries(Object.entries(data.items || {}).map(([id, item]) => {
+    if (!item.image_path || item.image_path.startsWith('http://') || item.image_path.startsWith('https://')) return [id, item]
+    changed = true
+    return [id, { ...item, image_path: '' }]
+  }))
+  return { data: changed ? { ...data, items } : data, changed }
+}
+
+async function loadSortMetadata(): Promise<Pick<AlmanaxData, 'sortMetadata'>> {
+  const [harvestables, resourceOrigins] = await Promise.all([
+    fetch('/data/harvestable_resources.json').then((response) => response.json()).catch(() => ({})) as Promise<Record<string, HarvestableResource>>,
+    fetch('/data/resource_origins.json').then((response) => response.json()).catch(() => ({})) as Promise<Record<string, ResourceOrigin>>,
+  ])
+  return { sortMetadata: { harvestables, resourceOrigins } }
+}
+
+function normalizeSharedItems(items: Record<string, CachedItem> | undefined): Record<string, CachedItem> | null {
+  if (!items || !Object.keys(items).length) return null
+  return Object.fromEntries(Object.entries(items).map(([id, item]) => {
+    const rawType = item.raw_type || 'Equipement'
+    return [id, {
+      ...item,
+      id: Number(item.id ?? id),
+      name: item.name || `Item ${id}`,
+      raw_type: rawType,
+      category: item.category || normalizeItemCategory(rawType),
+      type_name: item.type_name || '',
+      image_url: item.image_url || '',
+      image_path: item.image_path?.startsWith('http') ? item.image_path : '',
+    }]
+  }))
+}
+
+function applySharedCatalog(data: AlmanaxData, shared: SharedCatalogData | null): AlmanaxData {
+  const items = normalizeSharedItems(shared?.items)
+  if (!items || !shared?.recipes || !Object.keys(shared.recipes).length) return data
+  return {
+    ...data,
+    items,
+    recipes: shared.recipes,
+    itemSets: shared.itemSets || data.itemSets,
+    metadata: {
+      ...data.metadata,
+      ...(shared.metadata || {}),
+      almanax_source: data.metadata?.almanax_source || 'dofusdude',
+    },
+    sortMetadata: shared.sortMetadata || data.sortMetadata,
+  }
+}
+
+function toSharedCatalog(data: AlmanaxData, previous: SharedCatalogData | null): SharedCatalogData {
+  const recipes = Object.fromEntries(Object.entries(data.recipes || {}).filter((entry): entry is [string, Recipe] => Boolean(entry[1])))
+  const sharedItems = stripBundledImagePaths({ items: data.items }).data.items || {}
+  const remote = data.metadata?.remote || previous?.metadata?.remote
+  return {
+    ...(previous || {}),
+    items: sharedItems,
+    recipes,
+    itemSets: data.itemSets || previous?.itemSets || {},
+    metadata: {
+      ...(previous?.metadata || {}),
+      item_total: Object.keys(data.items || {}).length,
+      recipe_total: Object.keys(recipes).length,
+      item_set_total: Object.keys(data.itemSets || previous?.itemSets || {}).length,
+      last_sync: data.metadata?.last_sync || new Date().toISOString(),
+      remote,
+      shared_sync_state: data.metadata?.shared_sync_state || (remote ? 'complete' : 'bootstrap'),
+    },
+    sortMetadata: data.sortMetadata,
   }
 }
 
 export async function loadAlmanaxData(): Promise<AlmanaxData> {
   const stored = await loadStoredAlmanaxData().catch(() => null)
+  const sharedCatalog = await loadSharedCatalog<SharedCatalogData>().catch(() => null)
+  const sortMetadata = await loadSortMetadata()
   if (stored) {
     try {
       const bundledMetadata = await fetch('/data/metadata.json').then((response) => response.json())
-      const storedWithDefaults = {
-        ...stored,
-        almanax: dofusdudeAlmanaxCache(stored),
-        metadata: stored.metadata || {},
-      }
+      const normalizedStored = stripBundledImagePaths(stored)
+      const storedWithDefaults = applySharedCatalog({
+        ...normalizedStored.data,
+        almanax: dofusdudeAlmanaxCache(normalizedStored.data),
+        metadata: normalizedStored.data.metadata || {},
+        ...sortMetadata,
+      }, sharedCatalog)
       const bundledIsNewer =
         Number(bundledMetadata.item_total || 0) > Object.keys(storedWithDefaults.items || {}).length
         || Number(bundledMetadata.recipe_total || 0) > Object.keys(storedWithDefaults.recipes || {}).length
 
-      if (!bundledIsNewer) return storedWithDefaults
-      return loadBundledAlmanaxData(storedWithDefaults)
+      if (!bundledIsNewer) {
+        if (normalizedStored.changed) void saveStoredAlmanaxData(storedWithDefaults).catch(() => {})
+        if (!sharedCatalog) void saveSharedCatalog(toSharedCatalog(storedWithDefaults, sharedCatalog)).catch(() => {})
+        return storedWithDefaults
+      }
+      const bundled = stripBundledImagePaths(await loadBundledAlmanaxData(storedWithDefaults)).data
+      if (!sharedCatalog) void saveSharedCatalog(toSharedCatalog(bundled, sharedCatalog)).catch(() => {})
+      return applySharedCatalog(bundled, sharedCatalog)
     } catch {
-      return {
+      return applySharedCatalog({
         ...stored,
         almanax: dofusdudeAlmanaxCache(stored),
         metadata: { ...(stored.metadata || {}), almanax_source: 'dofusdude' },
-      }
+        ...sortMetadata,
+      }, sharedCatalog)
     }
   }
 
-  return loadBundledAlmanaxData()
+  const bundled = stripBundledImagePaths(await loadBundledAlmanaxData()).data
+  if (!sharedCatalog) void saveSharedCatalog(toSharedCatalog(bundled, sharedCatalog)).catch(() => {})
+  return applySharedCatalog(bundled, sharedCatalog)
 }
 
 export function selectedApiDates(start: string, end: string): string[] {
@@ -387,9 +684,9 @@ export function loadCachedEntries(data: AlmanaxData, dates: string[]): ItemEntry
     .filter((entry): entry is ItemEntry => Boolean(entry))
 }
 
-async function fetchItemById(itemId: number): Promise<CachedItem | null> {
+async function fetchItemById(itemId: number, previous?: CachedItem): Promise<CachedItem | null> {
   const result = await apiGet('/items', { id: itemId })
-  return normalizeApiItem(result?.data?.[0])
+  return normalizeApiItem(result?.data?.[0], previous)
 }
 
 function needsItemDetailRefresh(data: AlmanaxData, itemId: number): boolean {
@@ -399,15 +696,15 @@ function needsItemDetailRefresh(data: AlmanaxData, itemId: number): boolean {
 
 export async function refreshItemDetails(data: AlmanaxData, itemIds: number[], progress?: (message: string) => void): Promise<void> {
   const ids = Array.from(new Set(itemIds.filter((itemId) => needsItemDetailRefresh(data, itemId))))
-  await mapWithConcurrency(ids, PAGE_CONCURRENCY, async (itemId, index) => {
+  await mapWithConcurrency(ids, SHARED_DOFUSDB_CONCURRENCY, async (itemId, index) => {
     progress?.(`Types ${index + 1}/${ids.length}`)
-    const item = await fetchItemById(itemId)
+    const item = await fetchItemById(itemId, data.items[String(itemId)])
     if (item) data.items[String(itemId)] = item
   })
 }
 
 export async function refreshAlmanaxEntries(data: AlmanaxData, dates: string[], progress?: (message: string) => void): Promise<ItemEntry[]> {
-  await mapWithConcurrency(dates, 4, async (date, index) => {
+  await mapWithConcurrency(dates, ALMANAX_ENTRY_CONCURRENCY, async (date, index) => {
     progress?.(`Almanax ${index + 1}/${dates.length}`)
     await refreshAlmanaxDay(data, date)
   })
@@ -416,53 +713,148 @@ export async function refreshAlmanaxEntries(data: AlmanaxData, dates: string[], 
   return loadCachedEntries(data, dates)
 }
 
-export async function syncAlmanaxData(progress?: (message: string) => void): Promise<AlmanaxData> {
-  const [rawItems, rawRecipes] = await Promise.all([
-    fetchPaginated('/items', PAGE_LIMIT, 'Items', progress),
-    fetchPaginated('/recipes', RECIPE_PAGE_LIMIT, 'Recettes', progress),
+export async function syncAlmanaxData(progress?: AlmanaxSyncProgress): Promise<AlmanaxData> {
+  const [rawItems, rawRecipes, rawSets] = await Promise.all([
+    fetchPaginated('/items', PAGE_LIMIT, 'items', 'Items', progress),
+    fetchPaginated('/recipes', RECIPE_PAGE_LIMIT, 'recipes', 'Recettes', progress),
+    fetchPaginated('/item-sets', PAGE_LIMIT, 'itemSets', 'Panoplies', progress),
   ])
 
-  const normalizedItems = rawItems.map(normalizeApiItem).filter((item): item is CachedItem => Boolean(item))
+  const previous: Partial<AlmanaxData> = await loadAlmanaxData().catch(() => ({ almanax: {}, metadata: {} }))
+  const previousItems = previous.items || {}
+  const sortMetadata = previous.sortMetadata ? { sortMetadata: previous.sortMetadata } : await loadSortMetadata()
+  const normalizedItems = rawItems.map((rawItem) =>
+    normalizeApiItem(rawItem, previousItems[String(rawItem?.id)]),
+  ).filter((item): item is CachedItem => Boolean(item))
   const items = Object.fromEntries(normalizedItems.map((item) => [String(item.id), item]))
   const normalizedRecipes = rawRecipes.map(normalizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
   const recipes = Object.fromEntries(normalizedRecipes.map((recipe) => [String(recipe.result_id), recipe]))
-  const previous: Partial<AlmanaxData> = await loadAlmanaxData().catch(() => ({ almanax: {}, metadata: {} }))
+  const normalizedSets = rawSets.map(normalizeSet).filter((itemSet): itemSet is ItemSet => Boolean(itemSet))
+  const itemSets = Object.fromEntries(normalizedSets.map((itemSet) => [String(itemSet.id), itemSet]))
 
   const data: AlmanaxData = {
     items,
     recipes,
+    itemSets,
     almanax: dofusdudeAlmanaxCache(previous),
     metadata: {
       item_total: Object.keys(items).length,
       recipe_total: Object.keys(recipes).length,
+      item_set_total: Object.keys(itemSets).length,
       item_ids_checksum: idsChecksum(Object.keys(items)),
       recipe_ids_checksum: idsChecksum(Object.keys(recipes)),
       almanax_source: 'dofusdude',
       last_sync: new Date().toISOString(),
+      remote: {
+        items: { total: Object.keys(items).length, latestUpdatedAt: latestUpdatedAt(rawItems) },
+        recipes: { total: Object.keys(recipes).length, latestUpdatedAt: latestUpdatedAt(rawRecipes) },
+        itemSets: { total: Object.keys(itemSets).length, latestUpdatedAt: latestUpdatedAt(rawSets) },
+      },
+      shared_sync_state: 'complete',
     },
+    ...sortMetadata,
   }
 
   await saveStoredAlmanaxData(data)
-  progress?.(`Données synchronisées : ${Object.keys(items).length} items, ${Object.keys(recipes).length} recettes`)
+  await saveSharedCatalog(toSharedCatalog(data, await loadSharedCatalog<SharedCatalogData>().catch(() => null))).catch(() => {})
+  progress?.({ kind: 'message', message: `Données synchronisées : ${Object.keys(items).length} items, ${Object.keys(recipes).length} recettes, ${Object.keys(itemSets).length} panoplies` })
   return data
 }
 
+export async function syncAlmanaxImages(
+  data: AlmanaxData,
+  progress?: AlmanaxSyncProgress,
+): Promise<Map<number, string>> {
+  const cachedIds = await loadCachedImageIds()
+  const previousFailures = await loadFailedCachedImages().catch(() => null)
+  const ignoredImageIds = recentFailedImageIds(previousFailures)
+  const missing = groupMissingImages(data, new Set([...cachedIds, ...ignoredImageIds]))
+  let cursor = 0
+  let completed = 0
+  let bytesDone = 0
+  let successful = 0
+  let bytesTotal = missing.length * ESTIMATED_IMAGE_BYTES
+  const failures: FailedCachedImage[] = []
+  progress?.({ kind: 'images', done: 0, total: missing.length, bytesDone, bytesTotal })
+  await Promise.all(Array.from({ length: Math.min(SHARED_DOFUSDB_CONCURRENCY, missing.length) }, async () => {
+    while (cursor < missing.length) {
+      const [source, items] = missing[cursor++]
+      const savedItemIds = new Set<number>()
+      try {
+        const response = await fetch(source, { cache: 'no-store', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+        if (!response.ok) throw new Error(`Image ${response.status}`)
+        const blob = await response.blob()
+        bytesDone += blob.size
+        successful += 1
+        if (successful > 0) bytesTotal = Math.max(bytesDone, (bytesDone / successful) * missing.length)
+        for (const item of items) {
+          await saveCachedImage(item.id, blob)
+          savedItemIds.add(item.id)
+        }
+      } catch (error) {
+        const failedItems = items.filter((item) => !savedItemIds.has(item.id))
+        if (failedItems.length) {
+          const reason = String(error)
+          console.warn('[Almanax] image sync failed', {
+            source,
+            reason,
+            items: failedItems.map((item) => ({ id: item.id, name: item.name })),
+          })
+          failures.push(...failedItems.map((item) => ({ itemId: item.id, source, failedAt: new Date().toISOString(), reason })))
+        }
+      } finally {
+        completed += 1
+        if (completed % 50 === 0 || completed === missing.length || completed === 1 || missing.length - completed <= 50) {
+          progress?.({ kind: 'images', done: completed, total: missing.length, bytesDone, bytesTotal })
+        }
+      }
+    }
+  }))
+  const transientFailures = failures.filter(isTransientImageFailure)
+  const durableFailures = failures.filter((row) => !isTransientImageFailure(row))
+  if (transientFailures.length) {
+    throw new Error(`Connexion interrompue : ${transientFailures.length} images restent à télécharger`)
+  }
+  const validItemIds = Object.keys(data.items).map(Number)
+  const validItemIdSet = new Set(validItemIds)
+  const nextFailures = mergeFailedImages(previousFailures, durableFailures).filter((row) => validItemIdSet.has(row.itemId))
+  if (durableFailures.length || nextFailures.length !== (previousFailures?.length || 0)) {
+    await saveFailedCachedImages(nextFailures)
+  }
+  await pruneCachedImages(validItemIds).catch((error) => {
+    console.warn('[Almanax] shared image prune failed', error)
+  })
+  return new Map()
+}
+
 export async function checkAlmanaxDataStatus(data: AlmanaxData): Promise<DatabaseStatus> {
-  const [itemPage, recipePage] = await Promise.all([
-    apiGet('/items', { $limit: 1, $skip: 0 }),
-    apiGet('/recipes', { $limit: 1, $skip: 0 }),
+  const [itemPage, recipePage, itemSetPage] = await Promise.all([
+    endpointInfo('/items'),
+    endpointInfo('/recipes'),
+    endpointInfo('/item-sets'),
   ])
+  const sharedCatalog = await loadSharedCatalog<SharedCatalogData>().catch(() => null)
+  const localItems = localRemoteMetadata(data, sharedCatalog, 'items')
+  const localRecipes = localRemoteMetadata(data, sharedCatalog, 'recipes')
+  const localItemSets = localRemoteMetadata(data, sharedCatalog, 'itemSets')
 
   const status = {
-    remoteItemTotal: Number(itemPage.total || 0),
-    localItemTotal: Object.keys(data.items).length,
-    remoteRecipeTotal: Number(recipePage.total || 0),
-    localRecipeTotal: Object.keys(data.recipes).length,
+    remoteItemTotal: itemPage.total,
+    localItemTotal: localItems.total,
+    remoteRecipeTotal: recipePage.total,
+    localRecipeTotal: localRecipes.total,
+    remoteItemSetTotal: itemSetPage.total,
+    localItemSetTotal: localItemSets.total,
   }
   const missingLabels: string[] = []
-  if (status.remoteItemTotal !== status.localItemTotal) missingLabels.push('items')
-  if (status.remoteRecipeTotal !== status.localRecipeTotal) missingLabels.push('recettes')
-  return { ...status, missingLabels, needsSync: missingLabels.length > 0 }
+  if (status.remoteItemTotal !== status.localItemTotal || (itemPage.latestUpdatedAt && itemPage.latestUpdatedAt !== localItems.latestUpdatedAt)) missingLabels.push('items')
+  if (status.remoteRecipeTotal !== status.localRecipeTotal || (recipePage.latestUpdatedAt && recipePage.latestUpdatedAt !== localRecipes.latestUpdatedAt)) missingLabels.push('recettes')
+  if (status.remoteItemSetTotal !== status.localItemSetTotal || (itemSetPage.latestUpdatedAt && itemSetPage.latestUpdatedAt !== localItemSets.latestUpdatedAt)) missingLabels.push('panoplies')
+  const cachedIds = new Set(await loadCachedImageIds())
+  const ignoredImageIds = recentFailedImageIds(await loadFailedCachedImages())
+  const missingImageGroups = groupMissingImages(data, new Set([...cachedIds, ...ignoredImageIds])).length
+  if (missingImageGroups > 0) missingLabels.push('images')
+  return { ...status, missingImageGroups, missingLabels, needsSync: missingLabels.length > 0 }
 }
 
 function normalizeText(value: string): string {
@@ -486,7 +878,7 @@ function lineFor(data: AlmanaxData, kind: string, itemId: number, quantity: numb
     name: item?.name || `Item ${itemId}`,
     raw_type: item?.type_name || item?.raw_type || 'Item',
     category: item?.category || 'Ressource',
-    image_path: item?.image_url || item?.image_path || '',
+    image_path: item?.image_path || '',
     meta,
   }
 }

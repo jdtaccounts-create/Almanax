@@ -70,12 +70,21 @@ function extractRawType(rawItem) {
   return rawItem?.type?.superType?.name?.fr || rawItem?.type?.name?.fr || rawItem?.superType?.name?.fr || 'Equipement'
 }
 
-function normalizeApiItem(rawItem) {
+function isLocalImagePath(path) {
+  return Boolean(path && !/^https?:\/\//.test(path))
+}
+
+function normalizeApiItem(rawItem, previous) {
   const id = rawItem?.id
   if (id == null) return null
   const name = localText(rawItem, 'name', `Item ${id}`)
   const rawType = extractRawType(rawItem)
   const imageUrl = rawItem.img || rawItem.image || rawItem.image_url || ''
+  const localImagePath = isLocalImagePath(previous?.image_path)
+    ? previous.image_path
+    : isLocalImagePath(rawItem.image_path)
+      ? rawItem.image_path
+      : ''
   return {
     id: Number(id),
     name,
@@ -85,7 +94,7 @@ function normalizeApiItem(rawItem) {
     type_id: Number(rawItem?.typeId ?? rawItem?.type?.id) || null,
     item_type_category_id: Number(rawItem?.type?.categoryId) || null,
     image_url: imageUrl,
-    image_path: rawItem.image_path || imageUrl,
+    image_path: localImagePath || '',
   }
 }
 
@@ -121,14 +130,6 @@ const [rawItems, rawRecipes] = await Promise.all([
   fetchPaginated('/recipes', 'Recettes'),
 ])
 
-const items = Object.fromEntries(
-  rawItems
-    .map(normalizeApiItem)
-    .filter(Boolean)
-    .sort((a, b) => a.id - b.id)
-    .map((item) => [String(item.id), item]),
-)
-
 const recipes = Object.fromEntries(
   rawRecipes
     .map(normalizeRecipe)
@@ -139,6 +140,14 @@ const recipes = Object.fromEntries(
 
 const metadataPath = join(dataDir, 'metadata.json')
 const previousMetadata = await readJson(metadataPath, {})
+const previousItems = await readJson(join(dataDir, 'items.json'), {})
+const items = Object.fromEntries(
+  rawItems
+    .map((rawItem) => normalizeApiItem(rawItem, previousItems[String(rawItem?.id)]))
+    .filter(Boolean)
+    .sort((a, b) => a.id - b.id)
+    .map((item) => [String(item.id), item]),
+)
 const metadata = {
   ...previousMetadata,
   item_total: Object.keys(items).length,

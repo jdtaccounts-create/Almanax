@@ -657,9 +657,9 @@ p {
 
 .item-line {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: 29px max-content minmax(0, 1fr);
+  column-gap: 0;
+  align-items: start;
   padding: 3px 7px;
 }
 
@@ -669,7 +669,7 @@ p {
   cursor: pointer;
   width: 17px;
   height: 17px;
-  margin: 0 auto;
+  margin: 15px auto 0;
   border: 2px solid rgba(190, 190, 198, 0.8);
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.06);
@@ -693,21 +693,18 @@ p {
   transform: rotate(-45deg) translateY(-1px);
 }
 
-.item-line input[type='checkbox']:checked,
-.item-line.done input[type='checkbox'] {
+.item-line input[type='checkbox']:checked {
   border-color: var(--green) !important;
   background-color: var(--green) !important;
   box-shadow: 0 0 0 3px var(--green-soft);
 }
 
-:root[data-theme='light'] .item-line input[type='checkbox']:checked,
-:root[data-theme='light'] .item-line.done input[type='checkbox'] {
+:root[data-theme='light'] .item-line input[type='checkbox']:checked {
   border-color: var(--green) !important;
   background-color: var(--green) !important;
 }
 
-.item-line input[type='checkbox']:checked::after,
-.item-line.done input[type='checkbox']::after {
+.item-line input[type='checkbox']:checked::after {
   opacity: 1;
 }
 
@@ -1010,6 +1007,121 @@ p {
 .sync-modal .update-progress {
   color: var(--text);
   font-weight: 720;
+}
+
+.catalog-sync-dialog {
+  z-index: 70;
+}
+
+.sync-progress-card {
+  width: min(680px, calc(100vw - 40px));
+  max-width: calc(100vw - 40px);
+  box-sizing: border-box;
+  padding: 22px;
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.sync-progress-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.sync-progress-head > div {
+  min-width: 0;
+  flex: 1;
+  text-align: center;
+}
+
+.sync-progress-head span {
+  display: inline-flex;
+  margin-bottom: 5px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.sync-progress-head h2 {
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+.sync-progress-head strong {
+  min-width: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--item);
+  box-shadow: var(--inner);
+  font-size: 24px;
+  font-weight: 720;
+  line-height: 1;
+  text-align: center;
+}
+
+.sync-progress-track {
+  width: 100%;
+  height: 10px;
+  box-sizing: border-box;
+  padding: 1px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  background: color-mix(in srgb, var(--item) 76%, transparent);
+  box-shadow: var(--inner);
+  overflow: hidden;
+}
+
+.sync-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 72%, white));
+  transition: width .18s ease;
+}
+
+.sync-progress-rows {
+  display: grid;
+  gap: 6px;
+}
+
+.sync-progress-row {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--item) 72%, transparent);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.sync-progress-row strong {
+  color: var(--text);
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sync-progress-card p {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .modal-actions {
@@ -1506,8 +1618,8 @@ p {
 
 .item-line {
   padding: 0;
-  grid-template-columns: 29px minmax(0, 1fr);
-  gap: 2px;
+  grid-template-columns: 29px max-content minmax(0, 1fr);
+  column-gap: 0;
   align-items: start;
 }
 
@@ -1526,14 +1638,13 @@ p {
   margin: 0;
 }
 
-:root[data-theme='light'] .item-line:not(.done) input[type='checkbox']:not(:checked),
+:root[data-theme='light'] .item-line input[type='checkbox']:not(:checked),
 :root[data-theme='light'] .alternative-select {
   border-color: rgba(123, 132, 146, .76);
   background: rgba(255, 255, 255, .72);
 }
 
 .item-line input[type='checkbox']:checked,
-.item-line.done input[type='checkbox'],
 .alternative-option.selected .alternative-select {
   border-color: var(--success) !important;
   background: var(--success) !important;
@@ -1554,6 +1665,75 @@ p {
   border-color: var(--stroke-strong);
   background: var(--item-hover);
   transform: none;
+}
+
+.quantity-control {
+  margin-top: 9px;
+  margin-right: 6px;
+  display: grid;
+  grid-template-columns: var(--owned-input-width, 40px) var(--quantity-total-width, 26px);
+  gap: 4px;
+  align-items: center;
+}
+
+.item-link {
+  min-width: 0;
+  grid-column: 1 / -1;
+  padding: 0;
+  border: 0;
+  display: grid;
+  grid-template-columns: 39px minmax(0, 1fr);
+  align-items: center;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.owned-input {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 29px;
+  min-width: 0;
+  padding: 0 3px;
+  border: 1px solid var(--stroke);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--search);
+  font-size: 14px;
+  font-weight: 520;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+  outline: none;
+  box-shadow: var(--inner);
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.owned-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--inner), var(--chromatic-control);
+}
+
+.quantity-total {
+  color: var(--subtle);
+  font-size: 14px;
+  font-weight: 520;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  white-space: nowrap;
 }
 
 .offering-columns .item-line.today .item-card {
@@ -1577,10 +1757,13 @@ p {
 }
 
 .item-copy strong {
+  overflow: hidden;
   color: var(--text);
   font-size: 14px;
   font-weight: 520;
   line-height: 1.08;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .item-copy small {
@@ -1588,6 +1771,10 @@ p {
   font-size: 11px;
   font-weight: 520;
   line-height: 1.25;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .item-line.done .item-card {
@@ -1892,15 +2079,39 @@ p {
 }
 
 .item-line input[type='checkbox']:checked,
-.item-line.done input[type='checkbox'],
 .craft-drawer .item-line input[type='checkbox']:checked,
-.craft-drawer .item-line.done input[type='checkbox'],
 :root[data-theme='light'] .item-line input[type='checkbox']:checked,
-:root[data-theme='light'] .item-line.done input[type='checkbox'],
-:root[data-theme='light'] .craft-drawer .item-line input[type='checkbox']:checked,
-:root[data-theme='light'] .craft-drawer .item-line.done input[type='checkbox'] {
+:root[data-theme='light'] .craft-drawer .item-line input[type='checkbox']:checked {
   border-color: var(--success) !important;
   background-color: var(--success) !important;
   background-image: none !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent) !important;
+}
+
+.sync-modal.sync-progress-card {
+  width: min(680px, calc(100vw - 40px));
+  max-width: calc(100vw - 40px);
+}
+
+.sync-progress-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 18px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-progress-details span {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.sync-progress-details strong {
+  color: var(--text);
+  font-weight: 720;
 }
