@@ -658,8 +658,10 @@ async function checkAppUpdate(showPrompt: boolean): Promise<void> {
     const update = await check()
     if (update) {
       appUpdate.value = update
-      showAppUpdatePrompt.value = showPrompt
+      showAppUpdatePrompt.value = true
       status.value = `Mise a jour ${update.version} disponible`
+      checkingAppUpdate.value = false
+      await installAppUpdate()
       return
     }
     appUpdate.value = null
@@ -670,11 +672,6 @@ async function checkAppUpdate(showPrompt: boolean): Promise<void> {
   } finally {
     checkingAppUpdate.value = false
   }
-}
-
-function declineAppUpdate(): void {
-  showAppUpdatePrompt.value = false
-  updateProgress.value = 'Mise a jour disponible quand tu veux'
 }
 
 async function installAppUpdate(): Promise<void> {
@@ -1389,18 +1386,14 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
-    <div v-if="showAppUpdatePrompt && appUpdate" class="modal-backdrop" @click.self="declineAppUpdate">
-      <section class="sync-modal glass-surface" role="dialog" aria-modal="true" aria-labelledby="app-update-title">
-        <h2 id="app-update-title">Mettre a jour Almanax ?</h2>
+    <div v-if="showAppUpdatePrompt && appUpdate" class="sync-dialog">
+      <section class="sync-card glass-surface" role="dialog" aria-modal="true" aria-labelledby="app-update-title">
+        <h2 id="app-update-title">Mise à jour nécessaire</h2>
         <p>
-          La version {{ appUpdate.version }} est disponible. L'installation se fait en arriere-plan,
-          puis l'application redemarre toute seule.
+          La version {{ appUpdate.version }} est disponible. Almanax l'installe maintenant,
+          puis redémarre automatiquement.
         </p>
         <p v-if="updateProgress" class="update-progress">{{ updateProgress }}</p>
-        <div class="modal-actions">
-          <button class="q-action subtle" type="button" :disabled="installingAppUpdate" @click="declineAppUpdate">Plus tard</button>
-          <button class="q-action" type="button" :disabled="installingAppUpdate" @click="installAppUpdate">Installer</button>
-        </div>
       </section>
     </div>
   </main>
