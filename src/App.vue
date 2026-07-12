@@ -1391,7 +1391,7 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
-    <div v-if="showAppUpdatePrompt && appUpdate" class="sync-dialog">
+    <div v-if="showAppUpdatePrompt && appUpdate && !syncVisible" class="sync-dialog">
       <section class="sync-card glass-surface" role="dialog" aria-modal="true" aria-labelledby="app-update-title">
         <h2 id="app-update-title">Mise à jour nécessaire</h2>
         <p>
