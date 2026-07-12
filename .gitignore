@@ -15,6 +15,7 @@ test-results
 coverage
 *.local
 *.exe
+!src-tauri/resources/dofus-companion-sync.exe
 *.msi
 
 # Generated debug artifacts

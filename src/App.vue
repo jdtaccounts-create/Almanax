@@ -10,12 +10,9 @@ import {
   loadCachedEntries,
   refreshAlmanaxEntries,
   selectedApiDates,
-  syncAlmanaxData,
-  syncAlmanaxImages,
   type AlmanaxSyncProgressEvent,
   type AlmanaxData,
   type CraftLine,
-  type DatabaseStatus,
   type CraftPlan,
   type ItemEntry,
 } from './almanaxLogic'
@@ -23,12 +20,10 @@ import { allocateOwned, setCraftLineAllocation, type OwnedQuantities } from './p
 import { compareItemIds } from './resourceSort'
 import {
   acquireSharedSyncLock,
-  clearCachedImages,
   heartbeatSharedSyncLock,
   loadCachedImagesForIds,
   readSharedSyncLock,
   releaseSharedSyncLock,
-  saveFailedCachedImages,
   type SharedSyncLock,
 } from './almanaxStorage'
 
@@ -91,7 +86,7 @@ const FORCE_FULL_SYNC_PARAM = 'forceFullSync'
 const EXTERNAL_SYNC_IDLE_CONFIRM_MS = 3500
 const ESTIMATED_IMAGE_BYTES = 40 * 1024
 
-type SyncTaskKey = 'items' | 'recipes' | 'itemSets' | 'images'
+type SyncTaskKey = 'items' | 'recipes' | 'itemSets' | 'characteristics' | 'images' | 'statIcons'
 
 interface SyncTaskState {
   key: SyncTaskKey
@@ -102,12 +97,14 @@ interface SyncTaskState {
   bytesTotal?: number
 }
 
-const syncTaskOrder: SyncTaskKey[] = ['items', 'recipes', 'itemSets', 'images']
+const syncTaskOrder: SyncTaskKey[] = ['items', 'recipes', 'itemSets', 'characteristics', 'images', 'statIcons']
 const syncTaskLabels: Record<SyncTaskKey, string> = {
   items: 'Items',
   recipes: 'Recettes',
   itemSets: 'Panoplies',
+  characteristics: 'Stats',
   images: 'Images',
+  statIcons: 'Icônes stats',
 }
 
 function createSyncTasks(): Record<SyncTaskKey, SyncTaskState> {
@@ -888,23 +885,6 @@ function updateSyncTask(key: SyncTaskKey, patch: Partial<Omit<SyncTaskState, 'ke
   recordSyncSpeedSample()
 }
 
-function seedSyncProgress(info: DatabaseStatus, needsDataSync: boolean): void {
-  if (needsDataSync) {
-    updateSyncTask('items', { done: 0, total: info.remoteItemTotal, bytesDone: 0 })
-    updateSyncTask('recipes', { done: 0, total: info.remoteRecipeTotal, bytesDone: 0 })
-    updateSyncTask('itemSets', { done: 0, total: info.remoteItemSetTotal, bytesDone: 0 })
-  }
-  const estimatedImageTotal = info.missingImageGroups || (needsDataSync ? info.remoteItemTotal : 0)
-  if (estimatedImageTotal > 0) {
-    updateSyncTask('images', {
-      done: 0,
-      total: estimatedImageTotal,
-      bytesDone: 0,
-      bytesTotal: estimatedImageTotal * ESTIMATED_IMAGE_BYTES,
-    })
-  }
-}
-
 function handleSyncProgress(event: AlmanaxSyncProgressEvent | string): void {
   if (typeof event === 'string') {
     syncPhase.value = event
@@ -928,12 +908,78 @@ function handleSyncProgress(event: AlmanaxSyncProgressEvent | string): void {
     status.value = `Images ${formatQuantity(event.done)} / ${formatQuantity(event.total)}`
     return
   }
+  if (event.kind === 'statIcons') {
+    updateSyncTask('statIcons', {
+      done: event.done,
+      total: event.total,
+      bytesDone: event.bytesDone,
+      bytesTotal: event.bytesTotal,
+    })
+    status.value = `Icônes stats ${formatQuantity(event.done)} / ${formatQuantity(event.total)}`
+    return
+  }
   updateSyncTask(event.endpoint, {
     done: event.done,
     total: event.total,
     bytesDone: event.bytesDone,
   })
-  status.value = `${event.label} ${formatQuantity(event.done)} / ${formatQuantity(event.total)}`
+  status.value = `${event.label || syncTaskLabels[event.endpoint]} ${formatQuantity(event.done)} / ${formatQuantity(event.total)}`
+}
+
+function seedSharedSyncStatus(event: any): void {
+  const remote = event.remote || {}
+  if (remote.items?.total) updateSyncTask('items', { done: 0, total: Number(remote.items.total), bytesDone: 0 })
+  if (remote.recipes?.total) updateSyncTask('recipes', { done: 0, total: Number(remote.recipes.total), bytesDone: 0 })
+  if (remote.itemSets?.total) updateSyncTask('itemSets', { done: 0, total: Number(remote.itemSets.total), bytesDone: 0 })
+  if (remote.characteristics?.total) updateSyncTask('characteristics', { done: 0, total: Number(remote.characteristics.total), bytesDone: 0 })
+  if (event.missingImages) {
+    updateSyncTask('images', {
+      done: 0,
+      total: Number(event.missingImages),
+      bytesDone: 0,
+      bytesTotal: Number(event.missingImages) * ESTIMATED_IMAGE_BYTES,
+    })
+  }
+  if (event.missingStatIcons) updateSyncTask('statIcons', { done: 0, total: Number(event.missingStatIcons), bytesDone: 0 })
+  status.value = event.needsSync ? `Mise à jour disponible : ${(event.labels || []).join(', ')}` : 'Base Dofus commune déjà synchronisée'
+}
+
+function handleSharedSyncEnginePayload(payload: string): void {
+  const event = JSON.parse(payload)
+  if (event.kind === 'status') {
+    seedSharedSyncStatus(event)
+    return
+  }
+  if (event.kind === 'complete') {
+    status.value = event.changed ? 'Base Dofus commune synchronisée' : 'Base Dofus commune déjà synchronisée'
+    return
+  }
+  if (event.kind === 'error') {
+    status.value = `Synchronisation impossible : ${event.message}`
+    return
+  }
+  if (event.kind === 'message' || event.kind === 'endpoint' || event.kind === 'images' || event.kind === 'statIcons') {
+    handleSyncProgress(event as AlmanaxSyncProgressEvent)
+  }
+}
+
+async function runSharedSyncEngine(appName: string, force: boolean): Promise<void> {
+  const [{ invoke }, { listen }] = await Promise.all([
+    import('@tauri-apps/api/core'),
+    import('@tauri-apps/api/event'),
+  ])
+  const unlisten = await listen<string>('shared-sync-event', (event) => {
+    try {
+      handleSharedSyncEnginePayload(event.payload)
+    } catch (error) {
+      console.error('[Almanax] shared sync event parse failed', error, event.payload)
+    }
+  })
+  try {
+    await invoke('run_shared_sync_engine', { appName, force })
+  } finally {
+    unlisten()
+  }
 }
 
 async function waitForSyncDialogPaint(): Promise<void> {
@@ -979,51 +1025,8 @@ async function waitForStartupSharedSync(): Promise<boolean> {
   return true
 }
 
-async function withSharedSyncLock<T>(phase: string, action: () => Promise<T>): Promise<T> {
-  while (true) {
-    const status = await acquireSharedSyncLock('Almanax', phase)
-    if (status.acquired) {
-      if (syncExternalWait.value) resetSyncProgress(phase)
-      syncExternalWait.value = false
-      syncPhase.value = phase
-      break
-    }
-    if (status.lock) await waitForExternalSharedSync(status.lock)
-    else await sleep(500)
-  }
-  const heartbeat = window.setInterval(() => {
-    void heartbeatSharedSyncLock('Almanax', syncPhase.value || phase).catch(() => {})
-  }, 5000)
-  try {
-    return await action()
-  } finally {
-    window.clearInterval(heartbeat)
-    await releaseSharedSyncLock().catch(() => {})
-  }
-}
-
 async function syncImagesOnly(): Promise<void> {
-  if (!data.value) return
-  const current = data.value
-  working.value = true
-  resetSyncProgress('Synchronisation des images utiles...')
-  status.value = 'Synchronisation des images utiles...'
-  try {
-    await withSharedSyncLock('Synchronisation des images', async () => {
-      await syncAlmanaxImages(current, handleSyncProgress)
-      await ensureVisibleCachedImageUrls()
-      updateAvailable.value = false
-      dataStatusLabel.value = 'Donnees DofusDB a jour'
-      await checkStatus()
-      completeSyncProgress('Images synchronisées')
-    })
-  } catch (error) {
-    console.error('[Almanax] image sync failed', error)
-    status.value = `Erreur synchro images : ${String(error)}`
-    completeSyncProgress('Synchronisation images impossible, données locales conservées', 1600)
-  } finally {
-    working.value = false
-  }
+  await syncData(false)
 }
 
 async function syncData(forceFullSync = false): Promise<void> {
@@ -1031,36 +1034,9 @@ async function syncData(forceFullSync = false): Promise<void> {
   resetSyncProgress(forceFullSync ? 'Synchronisation complète forcée...' : 'Synchronisation des données...')
   status.value = forceFullSync ? 'Synchronisation complète forcée...' : 'Synchronisation des donnees...'
   try {
-    await withSharedSyncLock(forceFullSync ? 'Synchronisation complète forcée' : 'Synchronisation des données', async () => {
+    await waitForSyncDialogPaint()
+    await runSharedSyncEngine('Almanax', forceFullSync)
     data.value = await loadAlmanaxData()
-    if (!forceFullSync) {
-      const info = await checkAlmanaxDataStatus(data.value)
-      const dataLabels = info.missingLabels.filter((label) => label === 'items' || label === 'recettes' || label === 'panoplies')
-      if (!dataLabels.length && !info.missingLabels.includes('images')) {
-        updateAvailable.value = false
-        dataStatusLabel.value = 'Donnees DofusDB a jour'
-        status.value = 'Base Dofus commune déjà synchronisée'
-        completeSyncProgress('Données déjà synchronisées')
-        return
-      }
-      seedSyncProgress(info, dataLabels.length > 0)
-      if (!dataLabels.length && info.missingLabels.includes('images')) {
-        await syncAlmanaxImages(data.value, handleSyncProgress)
-        await ensureVisibleCachedImageUrls()
-        updateAvailable.value = false
-        dataStatusLabel.value = 'Donnees DofusDB a jour'
-        status.value = 'Images synchronisées'
-        completeSyncProgress('Synchronisation terminée')
-        return
-      }
-    }
-    if (forceFullSync) {
-      await clearCachedImages()
-      await saveFailedCachedImages([])
-      cachedImageUrls.value = new Map()
-    }
-    data.value = await syncAlmanaxData(handleSyncProgress)
-    await syncAlmanaxImages(data.value, handleSyncProgress)
     updateAvailable.value = false
     dataStatusLabel.value = 'Donnees DofusDB a jour'
     loadCached()
@@ -1068,7 +1044,6 @@ async function syncData(forceFullSync = false): Promise<void> {
     if (forceFullSync) clearForceFullSyncRequest()
     await checkStatus()
     completeSyncProgress('Synchronisation terminée')
-    })
   } catch (error) {
     status.value = `Erreur synchro : ${String(error)}`
     completeSyncProgress('Synchronisation impossible, données locales conservées', 1600)
