@@ -5,12 +5,6 @@ import {
   loadSharedCatalog,
   loadSharedJson,
   loadStoredAlmanaxData,
-  pruneCachedImages,
-  saveCachedImage,
-  saveCharacteristicIcon,
-  saveFailedCachedImages,
-  saveSharedCatalog,
-  saveSharedJson,
   saveStoredAlmanaxData,
   type FailedCachedImage,
 } from './almanaxStorage'
@@ -19,17 +13,12 @@ const API_URL = 'https://api.dofusdb.fr'
 const DOFUSDUDE_API_URL = 'https://api.dofusdu.de'
 const DEV_API_PROXY = '/dofusdb-api'
 const DEV_DOFUSDUDE_PROXY = '/dofusdude-api'
-const PAGE_LIMIT = 50
-const RECIPE_PAGE_LIMIT = 50
 const SHARED_DOFUSDB_CONCURRENCY = 8
 const ALMANAX_ENTRY_CONCURRENCY = 4
 const REQUEST_TIMEOUT_MS = 8_000
 const ESTIMATED_JSON_COMPRESSION_RATIO = 0.16
-const ESTIMATED_IMAGE_BYTES = 40 * 1024
-const ESTIMATED_CHARACTERISTIC_ICON_BYTES = 6 * 1024
 const FAILED_IMAGE_RETRY_MS = 24 * 60 * 60 * 1000
 const TRANSIENT_FAILED_IMAGE_RETRY_MS = 15 * 60 * 1000
-const CHARACTERISTIC_ICON_BASE_URL = 'https://dofusdb.fr/icons/characteristics'
 const CHARACTERISTIC_ICON_ALIASES: Record<string, string> = {
   tx_lifePoints: 'tx_health.png',
   tx_strengthRes: 'tx_res_strength.png',
@@ -260,10 +249,6 @@ function failedImageRetryMs(row: FailedCachedImage): number {
     : FAILED_IMAGE_RETRY_MS
 }
 
-function isTransientImageFailure(row: FailedCachedImage): boolean {
-  return failedImageRetryMs(row) === TRANSIENT_FAILED_IMAGE_RETRY_MS
-}
-
 function isRecentFailedImage(row: FailedCachedImage, now = Date.now()): boolean {
   return now - Date.parse(row.failedAt) < failedImageRetryMs(row)
 }
@@ -272,13 +257,6 @@ function recentFailedImageIds(rows: FailedCachedImage[] | null, now = Date.now()
   return new Set((rows || [])
     .filter((row) => isRecentFailedImage(row, now))
     .map((row) => row.itemId))
-}
-
-function mergeFailedImages(previous: FailedCachedImage[] | null, next: FailedCachedImage[]): FailedCachedImage[] {
-  const recent = (previous || []).filter((row) => isRecentFailedImage(row))
-  const byId = new Map(recent.map((row) => [row.itemId, row]))
-  next.forEach((row) => byId.set(row.itemId, row))
-  return [...byId.values()]
 }
 
 function estimatedCompressedJsonBytes(text: string, fallbackBytes?: number | null): number {
@@ -412,74 +390,13 @@ function normalizeEffects(rows: any[]): ItemEffect[] {
   }))
 }
 
-function normalizeRecipe(rawRecipe: any): Recipe | null {
-  if (!rawRecipe || rawRecipe.resultId == null) return null
-  return {
-    result_id: Number(rawRecipe.resultId),
-    ingredient_ids: (rawRecipe.ingredientIds || []).map(Number),
-    quantities: (rawRecipe.quantities || []).map(Number),
-  }
-}
-
-function compactText(value: string): string {
-  return normalizeText(value).replace(/\s/g, '')
-}
-
-function normalizeSet(rawSet: any): ItemSet | null {
-  if (rawSet?.id == null) return null
-  const name = rawSet.name?.fr || rawSet.slug?.fr || `Panoplie ${rawSet.id}`
-  return {
-    id: Number(rawSet.id),
-    name,
-    name_norm: normalizeText(name),
-    compact: compactText(name),
-    item_ids: (rawSet.items || []).map((item: any) => Number(item.id)).filter(Number.isFinite),
-    effects: (Array.isArray(rawSet.effects) ? rawSet.effects : []).map((group: any[]) => normalizeEffects(group)),
-  }
-}
-
 function characteristicIconFile(asset: string): string | null {
   if (!asset) return null
   return CHARACTERISTIC_ICON_ALIASES[asset] || `${asset}.png`
 }
 
-function normalizeCharacteristic(raw: any): Characteristic | null {
-  if (raw?.id == null) return null
-  const asset = String(raw.asset || '')
-  const iconFile = characteristicIconFile(asset)
-  return {
-    id: Number(raw.id),
-    keyword: String(raw.keyword || ''),
-    name: raw.name?.fr || raw.name?.en || `Caractéristique ${raw.id}`,
-    asset,
-    icon_file: iconFile,
-    icon_path: iconFile ? `icons/characteristics/${iconFile}` : null,
-    visible: Boolean(raw.visible),
-    order: Number(raw.order || 0),
-    category_id: Number.isFinite(Number(raw.categoryId)) ? Number(raw.categoryId) : null,
-    upgradable: Boolean(raw.upgradable),
-  }
-}
-
 function dofusdudeAlmanaxCache(previous: Partial<AlmanaxData> = {}): Record<string, AlmanaxCacheEntry> {
   return previous.metadata?.almanax_source === 'dofusdude' ? previous.almanax || {} : {}
-}
-
-function idsChecksum(ids: Iterable<string>): string {
-  const sorted = Array.from(ids).map(String).sort().join('\n')
-  let hash = 0
-  for (let index = 0; index < sorted.length; index += 1) {
-    hash = Math.imul(31, hash) + sorted.charCodeAt(index)
-    hash |= 0
-  }
-  return String(hash >>> 0)
-}
-
-function latestUpdatedAt(rows: any[]): string {
-  return rows.reduce((latest, row) => {
-    const value = String(row?.updatedAt || '')
-    return value > latest ? value : latest
-  }, '')
 }
 
 async function endpointInfo(path: string): Promise<{ total: number; latestUpdatedAt: string }> {
@@ -511,94 +428,6 @@ function localRemoteMetadata(data: AlmanaxData, sharedCatalog: SharedCatalogData
     total: Number(remote?.[endpoint]?.total || data.metadata?.[totalKeys[endpoint]] || sharedCatalog?.metadata?.[totalKeys[endpoint]] || 0) || fallbackTotals[endpoint],
     latestUpdatedAt: String(remote?.[endpoint]?.latestUpdatedAt || ''),
   }
-}
-
-function sharedSyncManifest(): Record<string, unknown> {
-  return {
-    schema_version: 2,
-    updated_at: new Date().toISOString(),
-    app_family: 'DofusCompanion',
-    storage_root: '%LOCALAPPDATA%\\DofusCompanionData',
-    required_json: [
-      { key: 'catalog', path: 'catalog/catalog.json', kind: 'catalog', required: true, syncable: true },
-      { key: 'failed-images', path: 'catalog/failed-images.json', kind: 'image-failures', required: false, syncable: true },
-      { key: 'characteristics', path: 'catalog/characteristics.json', kind: 'endpoint', required: true, syncable: true, endpoint: '/characteristics', page_limit: 150, normalizer: 'characteristics.v1' },
-      { key: 'characteristic-icons', path: 'catalog/characteristic-icons.json', kind: 'asset-manifest', required: true, syncable: true },
-      { key: 'characteristic-icon-aliases', path: 'catalog/characteristic-icon-aliases.json', kind: 'alias-map', required: true, syncable: true },
-      { key: 'sync-manifest', path: 'catalog/sync-manifest.json', kind: 'manifest', required: true, syncable: false },
-    ],
-    required_asset_groups: [
-      { key: 'item-images', path: 'images/items', required: true, syncable: true, source: 'item.image_url', extension: 'png' },
-      { key: 'characteristic-icons', path: 'icons/characteristics', required: true, syncable: true, source: `${CHARACTERISTIC_ICON_BASE_URL}/{file}`, extension: 'png' },
-    ],
-    endpoint_contracts: {
-      items: { endpoint: '/items', page_limit: PAGE_LIMIT, metadata_key: 'items', normalizer: 'items.v2' },
-      recipes: { endpoint: '/recipes', page_limit: RECIPE_PAGE_LIMIT, metadata_key: 'recipes', normalizer: 'recipes.v1' },
-      itemSets: { endpoint: '/item-sets', page_limit: PAGE_LIMIT, metadata_key: 'itemSets', normalizer: 'itemSets.v2' },
-      characteristics: { endpoint: '/characteristics', page_limit: 150, metadata_key: 'characteristics', normalizer: 'characteristics.v1' },
-    },
-    icon_aliases: CHARACTERISTIC_ICON_ALIASES,
-  }
-}
-
-async function saveSharedSyncManifest(): Promise<void> {
-  await saveSharedJson('sync-manifest', sharedSyncManifest())
-}
-
-async function syncCharacteristicSupport(rawCharacteristics: any[], progress?: AlmanaxSyncProgress): Promise<Characteristic[]> {
-  const characteristics = rawCharacteristics
-    .map(normalizeCharacteristic)
-    .filter((row): row is Characteristic => Boolean(row))
-  const aliases = Object.entries(CHARACTERISTIC_ICON_ALIASES).map(([asset, file]) => ({ asset, file }))
-  await saveSharedJson('characteristics', characteristics)
-  await saveSharedJson('characteristic-icon-aliases', aliases)
-  await saveSharedSyncManifest()
-  await syncCharacteristicIcons(characteristics, progress)
-  return characteristics
-}
-
-export async function syncCharacteristicSupportData(progress?: AlmanaxSyncProgress): Promise<Characteristic[]> {
-  const rawCharacteristics = await fetchPaginated('/characteristics', 150, 'characteristics', 'Stats', progress)
-  return syncCharacteristicSupport(rawCharacteristics, progress)
-}
-
-export async function syncCharacteristicIcons(characteristics: Characteristic[], progress?: AlmanaxSyncProgress): Promise<void> {
-  const existing = new Set(await loadCharacteristicIconFiles())
-  const required = [...new Set(characteristics.map((row) => row.icon_file).filter((file): file is string => Boolean(file)))]
-  const missing = required.filter((file) => !existing.has(file))
-  let cursor = 0
-  let completed = 0
-  let bytesDone = 0
-  let successful = 0
-  let bytesTotal = missing.length * ESTIMATED_CHARACTERISTIC_ICON_BYTES
-  const manifest: Array<{ file: string; path: string; source: string; bytes: number }> = []
-  progress?.({ kind: 'statIcons', done: 0, total: missing.length, bytesDone, bytesTotal })
-  await Promise.all(Array.from({ length: Math.min(SHARED_DOFUSDB_CONCURRENCY, missing.length) }, async () => {
-    while (cursor < missing.length) {
-      const file = missing[cursor++]
-      const source = `${CHARACTERISTIC_ICON_BASE_URL}/${file}`
-      const response = await fetch(source, { cache: 'no-store', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
-      if (!response.ok) throw new Error(`Icône caractéristique ${response.status}`)
-      const blob = await response.blob()
-      await saveCharacteristicIcon(file, blob)
-      bytesDone += blob.size
-      successful += 1
-      if (successful > 0) bytesTotal = Math.max(bytesDone, (bytesDone / successful) * missing.length)
-      manifest.push({ file, path: `icons/characteristics/${file}`, source, bytes: blob.size })
-      completed += 1
-      progress?.({ kind: 'statIcons', done: completed, total: missing.length, bytesDone, bytesTotal })
-    }
-  }))
-  const rows = required.map((file) => {
-    const downloaded = manifest.find((row) => row.file === file)
-    return downloaded || {
-      file,
-      path: `icons/characteristics/${file}`,
-      source: `${CHARACTERISTIC_ICON_BASE_URL}/${file}`,
-      bytes: 0,
-    }
-  })
-  await saveSharedJson('characteristic-icons', rows)
 }
 
 async function missingCharacteristicIconFiles(): Promise<string[]> {
@@ -807,28 +636,6 @@ function applySharedCatalog(data: AlmanaxData, shared: SharedCatalogData | null)
   }
 }
 
-function toSharedCatalog(data: AlmanaxData, previous: SharedCatalogData | null): SharedCatalogData {
-  const recipes = Object.fromEntries(Object.entries(data.recipes || {}).filter((entry): entry is [string, Recipe] => Boolean(entry[1])))
-  const sharedItems = stripBundledImagePaths({ items: data.items }).data.items || {}
-  const remote = data.metadata?.remote || previous?.metadata?.remote
-  return {
-    ...(previous || {}),
-    items: sharedItems,
-    recipes,
-    itemSets: data.itemSets || previous?.itemSets || {},
-    metadata: {
-      ...(previous?.metadata || {}),
-      item_total: Object.keys(data.items || {}).length,
-      recipe_total: Object.keys(recipes).length,
-      item_set_total: Object.keys(data.itemSets || previous?.itemSets || {}).length,
-      last_sync: data.metadata?.last_sync || new Date().toISOString(),
-      remote,
-      shared_sync_state: data.metadata?.shared_sync_state || (remote ? 'complete' : 'bootstrap'),
-    },
-    sortMetadata: data.sortMetadata,
-  }
-}
-
 export async function loadAlmanaxData(): Promise<AlmanaxData> {
   const stored = await loadStoredAlmanaxData().catch(() => null)
   const sharedCatalog = await loadSharedCatalog<SharedCatalogData>().catch(() => null)
@@ -911,124 +718,6 @@ export async function refreshAlmanaxEntries(data: AlmanaxData, dates: string[], 
   data.metadata = { ...data.metadata, last_almanax_sync: new Date().toISOString(), almanax_source: 'dofusdude' }
   await saveStoredAlmanaxData(data)
   return loadCachedEntries(data, dates)
-}
-
-export async function syncAlmanaxData(progress?: AlmanaxSyncProgress): Promise<AlmanaxData> {
-  const [rawItems, rawRecipes, rawSets, rawCharacteristics] = await Promise.all([
-    fetchPaginated('/items', PAGE_LIMIT, 'items', 'Items', progress),
-    fetchPaginated('/recipes', RECIPE_PAGE_LIMIT, 'recipes', 'Recettes', progress),
-    fetchPaginated('/item-sets', PAGE_LIMIT, 'itemSets', 'Panoplies', progress),
-    fetchPaginated('/characteristics', 150, 'characteristics', 'Stats', progress),
-  ])
-  const characteristics = await syncCharacteristicSupport(rawCharacteristics, progress)
-
-  const previous: Partial<AlmanaxData> = await loadAlmanaxData().catch(() => ({ almanax: {}, metadata: {} }))
-  const previousItems = previous.items || {}
-  const sortMetadata = previous.sortMetadata ? { sortMetadata: previous.sortMetadata } : await loadSortMetadata()
-  const normalizedItems = rawItems.map((rawItem) =>
-    normalizeApiItem(rawItem, previousItems[String(rawItem?.id)]),
-  ).filter((item): item is CachedItem => Boolean(item))
-  const items = Object.fromEntries(normalizedItems.map((item) => [String(item.id), item]))
-  const normalizedRecipes = rawRecipes.map(normalizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
-  const recipes = Object.fromEntries(normalizedRecipes.map((recipe) => [String(recipe.result_id), recipe]))
-  const normalizedSets = rawSets.map(normalizeSet).filter((itemSet): itemSet is ItemSet => Boolean(itemSet))
-  const itemSets = Object.fromEntries(normalizedSets.map((itemSet) => [String(itemSet.id), itemSet]))
-
-  const data: AlmanaxData = {
-    items,
-    recipes,
-    itemSets,
-    almanax: dofusdudeAlmanaxCache(previous),
-    metadata: {
-      item_total: Object.keys(items).length,
-      recipe_total: Object.keys(recipes).length,
-      item_set_total: Object.keys(itemSets).length,
-      characteristic_total: characteristics.length,
-      item_ids_checksum: idsChecksum(Object.keys(items)),
-      recipe_ids_checksum: idsChecksum(Object.keys(recipes)),
-      almanax_source: 'dofusdude',
-      last_sync: new Date().toISOString(),
-      remote: {
-        items: { total: Object.keys(items).length, latestUpdatedAt: latestUpdatedAt(rawItems) },
-        recipes: { total: Object.keys(recipes).length, latestUpdatedAt: latestUpdatedAt(rawRecipes) },
-        itemSets: { total: Object.keys(itemSets).length, latestUpdatedAt: latestUpdatedAt(rawSets) },
-        characteristics: { total: rawCharacteristics.length, latestUpdatedAt: latestUpdatedAt(rawCharacteristics) },
-      },
-      shared_sync_state: 'complete',
-    },
-    ...sortMetadata,
-  }
-
-  await saveStoredAlmanaxData(data)
-  await saveSharedCatalog(toSharedCatalog(data, await loadSharedCatalog<SharedCatalogData>().catch(() => null))).catch(() => {})
-  progress?.({ kind: 'message', message: `Données synchronisées : ${Object.keys(items).length} items, ${Object.keys(recipes).length} recettes, ${Object.keys(itemSets).length} panoplies` })
-  return data
-}
-
-export async function syncAlmanaxImages(
-  data: AlmanaxData,
-  progress?: AlmanaxSyncProgress,
-): Promise<Map<number, string>> {
-  const cachedIds = await loadCachedImageIds()
-  const previousFailures = await loadFailedCachedImages().catch(() => null)
-  const ignoredImageIds = recentFailedImageIds(previousFailures)
-  const missing = groupMissingImages(data, new Set([...cachedIds, ...ignoredImageIds]))
-  let cursor = 0
-  let completed = 0
-  let bytesDone = 0
-  let successful = 0
-  let bytesTotal = missing.length * ESTIMATED_IMAGE_BYTES
-  const failures: FailedCachedImage[] = []
-  progress?.({ kind: 'images', done: 0, total: missing.length, bytesDone, bytesTotal })
-  await Promise.all(Array.from({ length: Math.min(SHARED_DOFUSDB_CONCURRENCY, missing.length) }, async () => {
-    while (cursor < missing.length) {
-      const [source, items] = missing[cursor++]
-      const savedItemIds = new Set<number>()
-      try {
-        const response = await fetch(source, { cache: 'no-store', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
-        if (!response.ok) throw new Error(`Image ${response.status}`)
-        const blob = await response.blob()
-        bytesDone += blob.size
-        successful += 1
-        if (successful > 0) bytesTotal = Math.max(bytesDone, (bytesDone / successful) * missing.length)
-        for (const item of items) {
-          await saveCachedImage(item.id, blob)
-          savedItemIds.add(item.id)
-        }
-      } catch (error) {
-        const failedItems = items.filter((item) => !savedItemIds.has(item.id))
-        if (failedItems.length) {
-          const reason = String(error)
-          console.warn('[Almanax] image sync failed', {
-            source,
-            reason,
-            items: failedItems.map((item) => ({ id: item.id, name: item.name })),
-          })
-          failures.push(...failedItems.map((item) => ({ itemId: item.id, source, failedAt: new Date().toISOString(), reason })))
-        }
-      } finally {
-        completed += 1
-        if (completed % 50 === 0 || completed === missing.length || completed === 1 || missing.length - completed <= 50) {
-          progress?.({ kind: 'images', done: completed, total: missing.length, bytesDone, bytesTotal })
-        }
-      }
-    }
-  }))
-  const transientFailures = failures.filter(isTransientImageFailure)
-  const durableFailures = failures.filter((row) => !isTransientImageFailure(row))
-  if (transientFailures.length) {
-    throw new Error(`Connexion interrompue : ${transientFailures.length} images restent à télécharger`)
-  }
-  const validItemIds = Object.keys(data.items).map(Number)
-  const validItemIdSet = new Set(validItemIds)
-  const nextFailures = mergeFailedImages(previousFailures, durableFailures).filter((row) => validItemIdSet.has(row.itemId))
-  if (durableFailures.length || nextFailures.length !== (previousFailures?.length || 0)) {
-    await saveFailedCachedImages(nextFailures)
-  }
-  await pruneCachedImages(validItemIds).catch((error) => {
-    console.warn('[Almanax] shared image prune failed', error)
-  })
-  return new Map()
 }
 
 export async function checkAlmanaxDataStatus(data: AlmanaxData): Promise<DatabaseStatus> {
